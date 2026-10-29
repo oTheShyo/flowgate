@@ -1,0 +1,113 @@
+---
+title: Compliance Gating
+description: GDPR, HIPAA, PCI, and strict model allowlists for compliance-aware model gating in agent workflows.
+---
+
+The harness enforces model allowlists based on compliance requirements. When a compliance mode is set, only models in the corresponding allowlist are permitted.
+
+## Python Compliance Modes
+
+| Mode | Allowed Models | Use Case |
+|---|---|---|
+| `gdpr` | gpt-4o, gpt-4o-mini, gpt-3.5-turbo | EU data protection |
+| `hipaa` | gpt-4o, gpt-4o-mini | Healthcare data |
+| `pci` | gpt-4o-mini, gpt-3.5-turbo | Payment card data |
+| `strict` | gpt-4o | Maximum restriction |
+
+## TypeScript Compliance Modes
+
+| Mode | Allowed Models | Tool Policy |
+|---|---|---|
+| `regulated` | gpt-4o, Claude Sonnet 4.5 | Allowed |
+| `strict` | gpt-4o, gpt-4o-mini, Claude Sonnet 4.5, Claude Haiku 4.5 | Denied |
+
+<Warning>
+Compliance profile names currently differ between the Python and TypeScript harnesses. TypeScript does not currently implement the `gdpr`, `hipaa`, or `pci` profiles. An unknown TypeScript profile does not apply an allowlist.
+</Warning>
+
+## Usage
+
+<CodeGroup>
+
+```python Python
+import flowgate
+
+flowgate.init(mode="enforce")
+
+# GDPR compliance — only gpt-4o, gpt-4o-mini, gpt-3.5-turbo allowed
+with flowgate.run(compliance="gdpr") as session:
+    result = await agent.run("Process this EU customer data")
+```
+
+```typescript TypeScript
+import { init, run } from '@flowgate/core';
+
+init({ mode: 'enforce' });
+
+await run({ compliance: 'regulated' }, async () => {
+  await agent.run('Process this regulated customer data');
+});
+```
+
+</CodeGroup>
+
+Or as agent metadata:
+
+<CodeGroup>
+
+```python Python
+@flowgate.agent(compliance="hipaa")
+async def medical_agent(query: str):
+    return await llm.complete(query)
+```
+
+```typescript TypeScript
+import { harnessAgent } from '@flowgate/core';
+
+const regulatedAgent = harnessAgent({ compliance: 'regulated' })(
+  async (query: string) => llm.complete(query),
+);
+```
+
+</CodeGroup>
+
+## Enforcement Behavior
+
+When a model outside the allowlist is requested:
+
+- In `observe` mode: the trace records `action: "switch_model"` with the suggested compliant alternative, but execution continues with the original model
+- In `enforce` mode: the harness blocks the non-compliant model and either switches to a compliant alternative or stops execution
+
+## Combining with Budget
+
+Compliance and budget constraints are independent. Both are checked at every step:
+
+<CodeGroup>
+
+```python Python
+with flowgate.run(budget=0.50, compliance="gdpr") as session:
+    # Must stay within budget AND use only GDPR-approved models
+    result = await agent.run("Analyze EU customer feedback")
+```
+
+```typescript TypeScript
+await run({ budget: 0.50, compliance: 'regulated' }, async () => {
+  await agent.run('Analyze regulated customer feedback');
+});
+```
+
+</CodeGroup>
+
+## Custom Policies
+
+The harness APIs select built-in profiles by name. They do not currently accept custom model allowlists. For custom requirements, validate the selected model in your integration before sending the request.
+
+```python
+approved_models = {"my-approved-deployment"}
+if selected_model not in approved_models:
+    raise PermissionError("Model is not approved")
+```
+
+<Tip>
+**Example walkthrough:** [Compliance Gating](/examples/compliance-gating) | **GitHub:** [enforcement/basic_enforcement.py](https://github.com/oTheShyo/flowgate/blob/main/examples/enforcement/basic_enforcement.py)
+</Tip>

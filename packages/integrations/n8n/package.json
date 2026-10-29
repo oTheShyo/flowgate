@@ -1,0 +1,67 @@
+{
+  "name": "@flowgate/n8n-nodes-flowgate",
+  "version": "1.3.0",
+  "description": "n8n community node for flowgate — agent runtime intelligence layer with 40-85% cost savings",
+  "keywords": [
+    "n8n-community-node-package",
+    "n8n",
+    "flowgate",
+    "ai",
+    "llm",
+    "cost-optimization"
+  ],
+  "license": "MIT",
+  "homepage": "https://github.com/oTheShyo/flowgate",
+  "author": {
+    "name": "flowgate maintainers",
+    "email": "hello@flowgate.dev"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/oTheShyo/flowgate.git",
+    "directory": "packages/integrations/n8n"
+  },
+  "scripts": {
+    "build": "node esbuild.config.mjs",
+    "dev": "tsc --watch",
+    "test": "vitest run",
+    "format": "prettier nodes credentials --write",
+    "lint": "eslint \"nodes/**/*.ts\" \"credentials/**/*.ts\" package.json",
+    "lintfix": "eslint \"nodes/**/*.ts\" \"credentials/**/*.ts\" package.json --fix",
+    "prepublishOnly": "npm run build && npm run lint",
+    "prepack": "pnpm -w --filter @flowgate/core build && npm run build"
+  },
+  "files": [
+    "dist"
+  ],
+  "n8n": {
+    "n8nNodesApiVersion": 1,
+    "credentials": [
+      "dist/credentials/FlowGateApi.credentials.js"
+    ],
+    "nodes": [
+      "dist/nodes/LmChatFlowGate/LmChatFlowGate.node.js",
+      "dist/nodes/FlowGateAgent/FlowGateAgent.node.js"
+    ]
+  },
+  "devDependencies": {
+    "@flowgate/core": "^1.1.0",
+    "@types/node": "^20.10.0",
+    "@typescript-eslint/parser": "^6.0.0",
+    "esbuild": "^0.24.0",
+    "eslint": "^8.42.0",
+    "eslint-plugin-n8n-nodes-base": "^1.11.0",
+    "glob": "^11.0.0",
+    "n8n-workflow": "^1.0.0",
+    "prettier": "^2.7.1",
+    "typescript": "^5.1.6",
+    "vitest": "^1.0.4"
+  },
+  "peerDependencies": {
+    "n8n-workflow": "*",
+    "@langchain/core": ">=0.3.0"
+  },
+  "publishConfig": {
+    "access": "public"
+  }
+}

@@ -1,0 +1,160 @@
+---
+title: "Quickstart: Observe Mode"
+description: Add flowgate to an existing project with zero code changes. Track cost, latency, and model usage across all LLM calls.
+---
+
+# Observe Mode — Zero-Change Visibility
+
+Observe mode tracks every LLM call without blocking or modifying any behavior. This is the safest way to start: no enforcement, no model switching, just metrics.
+
+## Prerequisites
+
+- flowgate installed ([Installation](/get-started/installation))
+- At least one provider API key set (`OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, etc.)
+
+<Steps>
+
+<Step title="Initialize observe mode">
+
+Add `flowgate.init(mode="observe")` before any LLM calls in your application:
+
+<CodeGroup>
+
+```python
+import flowgate
+
+flowgate.init(mode="observe")
+
+# Your existing code — unchanged
+from openai import OpenAI
+client = OpenAI()
+
+response = client.chat.completions.create(
+    model="gpt-4o",
+    messages=[{"role": "user", "content": "What is flowgate?"}],
+)
+print(response.choices[0].message.content)
+```
+
+```typescript TypeScript
+import OpenAI from 'openai';
+import { init } from '@flowgate/core';
+
+init({ mode: 'observe' });
+
+// Your existing code remains unchanged.
+const client = new OpenAI();
+const response = await client.chat.completions.create({
+  model: 'gpt-4o',
+  messages: [{ role: 'user', content: 'What is flowgate?' }],
+});
+
+console.log(response.choices[0]?.message.content);
+```
+
+</CodeGroup>
+
+Every call is now tracked. Nothing is blocked or changed.
+
+</Step>
+
+<Step title="See what you spend">
+
+Wrap a block with `flowgate.run()` to get aggregate metrics:
+
+<CodeGroup>
+
+```python
+import flowgate
+
+flowgate.init(mode="observe")
+
+with flowgate.run() as session:
+    # Run your agent, chain, or direct LLM calls
+    response1 = await client.chat.completions.create(
+        model="gpt-4o-mini",
+        messages=[{"role": "user", "content": "Summarize this document"}],
+    )
+    response2 = await client.chat.completions.create(
+        model="gpt-4o",
+        messages=[{"role": "user", "content": "Analyze the sentiment"}],
+    )
+
+    summary = session.summary()
+    print(f"Total cost:    ${summary['cost']:.4f}")
+    print(f"LLM calls:     {summary['step_count']}")
+    print(f"Total latency: {summary['latency_used_ms']:.0f}ms")
+    print(f"Energy used:   {summary['energy_used']:.1f} units")
+```
+
+```typescript TypeScript
+import { init, run } from '@flowgate/core';
+
+init({ mode: 'observe' });
+
+await run(async (session) => {
+  await client.chat.completions.create({
+    model: 'gpt-4o-mini',
+    messages: [{ role: 'user', content: 'Summarize this document' }],
+  });
+  await client.chat.completions.create({
+    model: 'gpt-4o',
+    messages: [{ role: 'user', content: 'Analyze the sentiment' }],
+  });
+
+  const summary = session.summary();
+  console.log(`Total cost:    $${summary.cost.toFixed(4)}`);
+  console.log(`LLM calls:     ${summary.stepCount}`);
+  console.log(`Total latency: ${summary.latencyUsedMs.toFixed(0)}ms`);
+  console.log(`Energy used:   ${summary.energyUsed.toFixed(1)} units`);
+});
+```
+
+</CodeGroup>
+
+</Step>
+
+<Step title="Read the decision trace">
+
+Even in observe mode, flowgate records what it **would** have done:
+
+<CodeGroup>
+
+```python
+for record in session.trace():
+    print(f"Step {record['step']}: {record['action']}: {record['reason']}")
+    print(f"  Model: {record['model']}, Cost so far: ${record['cost_total']:.4f}")
+    print(f"  Applied: {record['applied']}")  # Always False in observe mode
+```
+
+```typescript TypeScript
+for (const record of session.trace()) {
+  console.log(`Step ${record.step}: ${record.action}: ${record.reason}`);
+  console.log(`  Model: ${record.model}, Cost so far: $${record.costTotal.toFixed(4)}`);
+  console.log(`  Applied: ${record.applied}`); // Always false in observe mode
+}
+```
+
+</CodeGroup>
+
+This lets you audit compliance violations, budget overruns, and routing decisions before turning on enforcement.
+
+</Step>
+
+</Steps>
+
+<Tip>
+The TypeScript harness instruments the OpenAI and Anthropic SDKs. Use `CascadeAgent` separately when you want speculative model cascading.
+</Tip>
+
+## What You Learn in Observe Mode
+
+- How much each agent run actually costs
+- Which models are called and how often
+- Where latency accumulates across steps
+- Which calls would violate compliance policies
+- Whether budget caps would have triggered
+
+## Next Step
+
+Ready to enforce constraints? [Add budget enforcement →](/get-started/enforce)

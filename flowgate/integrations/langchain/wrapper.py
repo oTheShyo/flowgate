@@ -1,0 +1,2046 @@
+"""FlowGate LangChain wrapper - transparent wrapper for LangChain chat models.
+
+Preserves all LangChain model functionality while adding intelligent
+cascade logic for cost optimization.
+
+Example:
+    >>> from langchain_openai import ChatOpenAI
+    >>> from flowgate.langchain import FlowGate
+    >>>
+    >>> drafter = ChatOpenAI(model='gpt-4o-mini')
+    >>> verifier = ChatOpenAI(model='gpt-4o')
+    >>>
+    >>> cascade = FlowGate(
+    ...     drafter=drafter,
+    ...     verifier=verifier,
+    ...     quality_threshold=0.7
+    ... )
+    >>>
+    >>> result = await cascade.ainvoke("What is TypeScript?")
+"""
+
+import asyncio
+import inspect
+import time
+from typing import Any, AsyncIterator, Iterator, Optional
+
+from langchain_core.callbacks.manager import CallbackManagerForLLMRun
+from langchain_core.language_models.chat_models import BaseChatModel
+from langchain_core.messages import AIMessage, AIMessageChunk, BaseMessage
+from langchain_core.outputs import ChatGeneration, ChatGenerationChunk, ChatResult
+
+from flowgate.routing.tool_risk import get_tool_risk_routing
+
+from .types import CascadeResult
+from .utils import calculate_quality, create_cost_metadata, extract_tool_calls
+
+
+class FlowGate(BaseChatModel):
+    """FlowGate - Transparent wrapper for LangChain chat models.
+
+    Implements the speculative execution pattern with automatic quality-based
+    routing between a fast drafter model and an accurate verifier model.
+
+    Attributes:
+        drafter: The drafter model (cheap, fast) - tries first
+        verifier: The verifier model (expensive, accurate) - used when quality is insufficient
+        quality_threshold: Quality threshold for accepting drafter responses (0-1)
+        enable_cost_tracking: Enable automatic cost tracking
+        cost_tracking_provider: Cost tracking provider ('langsmith' or 'flowgate')
+        quality_validator: Custom quality validator function
+        enable_pre_router: Enable pre-routing based on query complexity
+        pre_router: Custom PreRouter instance
+        cascade_complexities: Complexity levels that should use cascade
+    """
+
+    drafter: Any
+    verifier: Any
+    quality_threshold: float = 0.7
+    enable_cost_tracking: bool = True
+    # Default to local pricing for best DX (works without LangSmith).
+    # Use "langsmith" if you want server-side cost computation in LangSmith UI.
+    cost_tracking_provider: str = "flowgate"
+    quality_validator: Optional[Any] = None
+    enable_pre_router: bool = True
+    pre_router: Optional[Any] = None
+    cascade_complexities: list[str] = ["trivial", "simple", "moderate"]
+    domain_policies: dict[str, dict[str, Any]] = {}
+
+    # Private state
+    _last_cascade_result: Optional[CascadeResult] = None
+    _bind_kwargs: dict[str, Any] = {}
+    _bound_tool_defs: Optional[list[dict[str, Any]]] = None
+
+    class Config:
+        """Pydantic configuration."""
+
+        arbitrary_types_allowed = True
+
+    def __init__(
+        self,
+        drafter: Any,
+        verifier: Any,
+        quality_threshold: float = 0.7,
+        enable_cost_tracking: bool = True,
+        cost_tracking_provider: str = "flowgate",
+        quality_validator: Optional[Any] = None,
+        enable_pre_router: bool = True,
+        pre_router: Optional[Any] = None,
+        cascade_complexities: Optional[list[str]] = None,
+        domain_policies: Optional[dict[str, dict[str, Any]]] = None,
+        **kwargs: Any,
+    ):
+        """Initialize FlowGate wrapper.
+
+        Args:
+            drafter: The drafter model (cheap, fast)
+            verifier: The verifier model (expensive, accurate)
+            quality_threshold: Quality threshold for accepting drafter responses (0-1)
+            enable_cost_tracking: Enable automatic cost tracking
+            cost_tracking_provider: 'langsmith' (server-side) or 'flowgate' (local)
+            quality_validator: Custom quality validator function
+            enable_pre_router: Enable pre-routing based on query complexity
+            pre_router: Custom PreRouter instance
+            cascade_complexities: Complexity levels that should use cascade
+            domain_policies: Optional per-domain routing/threshold overrides
+            **kwargs: Additional arguments passed to BaseChatModel
+        """
+        # Initialize parent class
+        super().__init__(
+            drafter=drafter,
+            verifier=verifier,
+            quality_threshold=quality_threshold,
+            enable_cost_tracking=enable_cost_tracking,
+            cost_tracking_provider=cost_tracking_provider,
+            quality_validator=quality_validator,
+            enable_pre_router=enable_pre_router,
+            pre_router=pre_router,
+            cascade_complexities=cascade_complexities or ["trivial", "simple", "moderate"],
+            domain_policies=domain_policies or {},
+            **kwargs,
+        )
+
+        self._last_cascade_result = None
+        self._bind_kwargs = {}
+        self._bound_tool_defs = None
+        self.domain_policies = {
+            str(k).strip().lower(): dict(v or {}) for k, v in (domain_policies or {}).items()
+        }
+
+        # Initialize PreRouter if enabled
+        if self.enable_pre_router and not self.pre_router:
+            from .routers.pre_router import PreRouter
+
+            self.pre_router = PreRouter({"cascade_complexities": self.cascade_complexities})
+
+    @property
+    def _llm_type(self) -> str:
+        """Return LLM type identifier."""
+        return "flowgate"
+
+    def _resolve_model_name(self, model: Any) -> str:
+        return (
+            getattr(model, "model_name", None)
+            or getattr(model, "model", None)
+            or getattr(model, "_llm_type", None)
+            or type(model).__name__
+        )
+
+    def _split_runnable_config(
+        self, kwargs: dict[str, Any]
+    ) -> tuple[dict[str, Any], dict[str, Any]]:
+        config_keys = {
+            "tags",
+            "metadata",
+            "callbacks",
+            "run_name",
+            "run_id",
+            "max_concurrency",
+            "recursion_limit",
+            "configurable",
+        }
+        model_kwargs: dict[str, Any] = {}
+        config: dict[str, Any] = {}
+        for key, value in kwargs.items():
+            if key in config_keys:
+                if value is not None:
+                    config[key] = value
+            else:
+                model_kwargs[key] = value
+        return model_kwargs, config
+
+    def _resolve_callbacks(self, raw_callbacks: Any) -> list[Any]:
+        if raw_callbacks is None:
+            callbacks: list[Any] = []
+        elif isinstance(raw_callbacks, list):
+            callbacks = list(raw_callbacks)
+        elif isinstance(raw_callbacks, tuple):
+            callbacks = list(raw_callbacks)
+        else:
+            callbacks = [raw_callbacks]
+
+        try:
+            from flowgate.harness import get_current_run, get_harness_config
+
+            harness_config = get_harness_config()
+            run_ctx = get_current_run()
+            if harness_config.mode == "off" or run_ctx is None or run_ctx.mode == "off":
+                return callbacks
+
+            from .harness_callback import HarnessAwareFlowGateCallbackHandler
+
+            if any(isinstance(cb, HarnessAwareFlowGateCallbackHandler) for cb in callbacks):
+                return callbacks
+
+            callbacks.append(HarnessAwareFlowGateCallbackHandler())
+            return callbacks
+        except Exception:
+            # Preserve existing behavior for users who do not enable harness flows.
+            return callbacks
+
+    def _generate(
+        self,
+        messages: list[BaseMessage],
+        stop: Optional[list[str]] = None,
+        run_manager: Optional[CallbackManagerForLLMRun] = None,
+        **kwargs: Any,
+    ) -> ChatResult:
+        """Core cascade generation logic.
+
+        Implements the speculative execution pattern:
+        1. Check PreRouter (if enabled) to determine routing strategy
+        2. Execute drafter (cheap, fast model)
+        3. Validate quality of drafter response
+        4. If quality insufficient, execute verifier (expensive, accurate model)
+        5. Track costs and metadata
+
+        Args:
+            messages: Input messages
+            stop: Stop sequences
+            run_manager: Callback manager
+            **kwargs: Additional arguments
+
+        Returns:
+            ChatResult with final response and metadata
+        """
+        start_time = time.time()
+
+        # Merge bind kwargs with call kwargs
+        merged_kwargs = {**self._bind_kwargs, **kwargs}
+        if stop:
+            merged_kwargs["stop"] = stop
+
+        # Extract callbacks before filtering (need to pass them explicitly to nested models)
+        callbacks = self._resolve_callbacks(merged_kwargs.get("callbacks", []))
+
+        existing_tags = merged_kwargs.get("tags", []) or []
+        base_tags = existing_tags + ["flowgate"] if existing_tags else ["flowgate"]
+        existing_metadata = merged_kwargs.get("metadata", {}) or {}
+        resolved_domain = self._resolve_domain(messages, existing_metadata)
+        effective_quality_threshold = self._effective_quality_threshold(resolved_domain)
+        force_verifier_for_domain = self._domain_forces_verifier(resolved_domain)
+        domain_direct_to_verifier = self._domain_requires_direct_verifier(resolved_domain)
+        base_metadata = {
+            **existing_metadata,
+            "flowgate": {
+                **existing_metadata.get("flowgate", {}),
+                "integration": "langchain",
+                "domain": resolved_domain,
+                "effective_quality_threshold": effective_quality_threshold,
+            },
+        }
+        if resolved_domain:
+            base_tags = base_tags + [f"flowgate:domain={resolved_domain}"]
+
+        # Filter out callback-related keys that LangChain propagates automatically
+        # Passing these explicitly to nested models would create duplicate parameter errors
+        # NOTE: We keep 'tags' in safe_kwargs and merge with our tags for reliable LangSmith tracking
+        safe_kwargs = {
+            k: v
+            for k, v in merged_kwargs.items()
+            if k not in ("callbacks", "run_manager", "run_id", "stop")
+        }
+
+        # STEP 0: PreRouter - Check if we should bypass cascade
+        use_cascade = True
+        routing_decision = None
+
+        if self.enable_pre_router and self.pre_router:
+            # Extract query text from messages
+            query_text = "\n".join(
+                [msg.content if isinstance(msg.content, str) else "" for msg in messages]
+            )
+
+            # Route based on complexity
+            routing_decision = self._route_query_sync(query_text)
+            from .routers.base import RoutingStrategy
+
+            if not resolved_domain:
+                resolved_domain = self._resolve_domain(
+                    messages, existing_metadata, routing_decision
+                )
+                effective_quality_threshold = self._effective_quality_threshold(resolved_domain)
+                force_verifier_for_domain = self._domain_forces_verifier(resolved_domain)
+                domain_direct_to_verifier = self._domain_requires_direct_verifier(resolved_domain)
+                base_metadata["flowgate"]["domain"] = resolved_domain
+                base_metadata["flowgate"][
+                    "effective_quality_threshold"
+                ] = effective_quality_threshold
+                if resolved_domain:
+                    base_tags = base_tags + [f"flowgate:domain={resolved_domain}"]
+
+            use_cascade = (
+                routing_decision is None
+                or routing_decision.get("strategy") == RoutingStrategy.CASCADE
+            )
+
+            # If direct routing, skip drafter and go straight to verifier
+            if routing_decision is not None and not use_cascade:
+                # Pass only safe kwargs with explicit stop and merged tags for reliable LangSmith tracking
+                verifier_tags = base_tags + [
+                    "flowgate:direct",
+                    "flowgate:verifier",
+                    "verifier",
+                ]
+                verifier_llm_result = self.verifier.generate(
+                    [messages],
+                    stop=stop,
+                    callbacks=callbacks,
+                    **{
+                        **safe_kwargs,
+                        "tags": verifier_tags,
+                        "metadata": {
+                            **base_metadata,
+                            "flowgate": {
+                                **base_metadata["flowgate"],
+                                "decision": "direct",
+                                "role": "verifier",
+                            },
+                        },
+                    },
+                )
+
+                # Convert LLMResult to ChatResult (generate returns LLMResult with nested generations)
+                verifier_result = ChatResult(
+                    generations=verifier_llm_result.generations[0],
+                    llm_output=verifier_llm_result.llm_output,
+                )
+
+                latency_ms = (time.time() - start_time) * 1000
+                verifier_model_name = self._resolve_model_name(self.verifier)
+
+                # Store cascade result (direct to verifier)
+                self._last_cascade_result = CascadeResult(
+                    content=verifier_result.generations[0].text,
+                    model_used="verifier",
+                    accepted=False,
+                    drafter_quality=0.0,  # No drafter used (pre-router bypass)
+                    drafter_cost=0.0,
+                    verifier_cost=0.0,
+                    total_cost=0.0,
+                    savings_percentage=0.0,
+                    latency_ms=latency_ms,
+                )
+
+                # Inject metadata if cost tracking enabled
+                if self.enable_cost_tracking:
+                    try:
+                        metadata = {
+                            "cascade_decision": "direct",
+                            "model_used": "verifier",
+                            "routing_reason": routing_decision["reason"],
+                            "complexity": routing_decision.get("metadata", {}).get("complexity"),
+                            "domain": resolved_domain,
+                            "drafter_quality": 0.0,  # No drafter used (pre-router bypass)
+                            "effective_quality_threshold": effective_quality_threshold,
+                        }
+
+                        if not verifier_result.llm_output:
+                            verifier_result.llm_output = {}
+                        verifier_result.llm_output["cascade"] = metadata
+
+                        # Also inject into generation metadata
+                        if verifier_result.generations:
+                            gen = verifier_result.generations[0]
+                            if hasattr(gen, "message") and gen.message:
+                                if not hasattr(gen.message, "response_metadata"):
+                                    gen.message.response_metadata = {}
+                                gen.message.response_metadata["cascade"] = metadata
+                    except Exception as e:
+                        print(f"Warning: Failed to inject cascade metadata: {e}")
+
+                return verifier_result
+
+        if domain_direct_to_verifier:
+            verifier_tags = base_tags + [
+                "flowgate:direct",
+                "flowgate:verifier",
+                "verifier",
+                "flowgate:reason=domain_policy_direct",
+            ]
+            verifier_llm_result = self.verifier.generate(
+                [messages],
+                stop=stop,
+                callbacks=callbacks,
+                **{
+                    **safe_kwargs,
+                    "tags": verifier_tags,
+                    "metadata": {
+                        **base_metadata,
+                        "flowgate": {
+                            **base_metadata["flowgate"],
+                            "decision": "direct",
+                            "role": "verifier",
+                            "reason": "domain_policy_direct",
+                        },
+                    },
+                },
+            )
+            verifier_result = ChatResult(
+                generations=verifier_llm_result.generations[0],
+                llm_output=verifier_llm_result.llm_output,
+            )
+
+            latency_ms = (time.time() - start_time) * 1000
+            self._last_cascade_result = CascadeResult(
+                content=verifier_result.generations[0].text,
+                model_used="verifier",
+                accepted=False,
+                drafter_quality=0.0,
+                drafter_cost=0.0,
+                verifier_cost=0.0,
+                total_cost=0.0,
+                savings_percentage=0.0,
+                latency_ms=latency_ms,
+            )
+            if self.enable_cost_tracking:
+                try:
+                    metadata = {
+                        "cascade_decision": "direct",
+                        "model_used": "verifier",
+                        "routing_reason": "domain_policy_direct",
+                        "domain": resolved_domain,
+                        "drafter_quality": 0.0,
+                        "effective_quality_threshold": effective_quality_threshold,
+                    }
+                    if not verifier_result.llm_output:
+                        verifier_result.llm_output = {}
+                    verifier_result.llm_output["cascade"] = metadata
+                    if verifier_result.generations:
+                        gen = verifier_result.generations[0]
+                        if hasattr(gen, "message") and gen.message:
+                            if not hasattr(gen.message, "response_metadata"):
+                                gen.message.response_metadata = {}
+                            gen.message.response_metadata["cascade"] = metadata
+                except Exception as e:
+                    print(f"Warning: Failed to inject cascade metadata: {e}")
+            return verifier_result
+
+        # STEP 1: Execute drafter (cheap, fast model)
+        # Merge existing tags from config with drafter tag for reliable LangSmith tracking
+        drafter_tags = base_tags + ["flowgate:drafter", "drafter"]
+        drafter_llm_result = self.drafter.generate(
+            [messages],
+            stop=stop,
+            callbacks=callbacks,
+            **{
+                **safe_kwargs,
+                "tags": drafter_tags,
+                "metadata": {
+                    **base_metadata,
+                    "flowgate": {
+                        **base_metadata["flowgate"],
+                        "decision": "draft",
+                        "role": "drafter",
+                    },
+                },
+            },
+        )
+
+        # Convert LLMResult to ChatResult
+        drafter_result = ChatResult(
+            generations=drafter_llm_result.generations[0], llm_output=drafter_llm_result.llm_output
+        )
+
+        # Calculate drafter quality
+        quality_func = self.quality_validator or calculate_quality
+        drafter_tool_calls = extract_tool_calls(drafter_result)
+        invoked_tool_names = self._extract_tool_call_names(drafter_tool_calls)
+
+        tool_risk = None
+        force_verifier_for_tool_risk = False
+        if invoked_tool_names:
+            invoked_defs = [self._get_tool_def_for_name(n) for n in invoked_tool_names]
+            tool_risk = self._sanitize_tool_risk(get_tool_risk_routing(invoked_defs))
+            force_verifier_for_tool_risk = bool(tool_risk.get("use_verifier"))
+
+        drafter_quality = quality_func(drafter_result)
+
+        # STEP 2: Check quality threshold and domain policy.
+        accepted = self._should_accept_drafter(
+            drafter_quality=drafter_quality,
+            invoked_tool_names=invoked_tool_names,
+            force_verifier_for_tool_risk=force_verifier_for_tool_risk,
+            force_verifier_for_domain=force_verifier_for_domain,
+            quality_threshold=effective_quality_threshold,
+        )
+
+        if accepted:
+            # Quality is sufficient - use drafter response
+            final_result = drafter_result
+            verifier_result = None
+        else:
+            # Quality insufficient - execute verifier (expensive, accurate model)
+            # Pass only safe kwargs with explicit stop and merged tags for reliable LangSmith tracking
+            if force_verifier_for_tool_risk:
+                reason = "tool_risk"
+            elif force_verifier_for_domain:
+                reason = "domain_policy"
+            else:
+                reason = "quality"
+            verifier_tags = base_tags + [
+                "flowgate:verifier",
+                "verifier",
+                "flowgate:escalated",
+                f"flowgate:reason={reason}",
+            ]
+            if tool_risk and tool_risk.get("max_risk_name"):
+                verifier_tags.append(f"flowgate:toolrisk={tool_risk['max_risk_name']}")
+            verifier_llm_result = self.verifier.generate(
+                [messages],
+                stop=stop,
+                callbacks=callbacks,
+                **{
+                    **safe_kwargs,
+                    "tags": verifier_tags,
+                    "metadata": {
+                        **base_metadata,
+                        "flowgate": {
+                            **base_metadata["flowgate"],
+                            "decision": "verify",
+                            "role": "verifier",
+                            "reason": reason,
+                            "tool_risk": tool_risk,
+                            "domain_policy": self._domain_policy(resolved_domain) or None,
+                        },
+                    },
+                },
+            )
+            # Convert LLMResult to ChatResult
+            verifier_result = ChatResult(
+                generations=verifier_llm_result.generations[0],
+                llm_output=verifier_llm_result.llm_output,
+            )
+            final_result = verifier_result
+
+        # STEP 3: Calculate costs and metadata
+        latency_ms = (time.time() - start_time) * 1000
+        drafter_model_name = self._resolve_model_name(self.drafter)
+        verifier_model_name = self._resolve_model_name(self.verifier)
+
+        cost_metadata = create_cost_metadata(
+            drafter_result,
+            verifier_result,
+            drafter_model_name,
+            verifier_model_name,
+            accepted,
+            drafter_quality,
+            self.cost_tracking_provider,
+        )
+
+        cascade_decision = (
+            ("tool_call" if accepted else "tool_risk")
+            if invoked_tool_names and not force_verifier_for_domain
+            else (
+                "accepted"
+                if accepted
+                else ("domain_policy" if force_verifier_for_domain else "quality")
+            )
+        )
+
+        # Store cascade result
+        self._last_cascade_result = CascadeResult(
+            content=final_result.generations[0].text,
+            model_used="drafter" if accepted else "verifier",
+            drafter_quality=drafter_quality,
+            accepted=accepted,
+            drafter_cost=cost_metadata["drafter_cost"],
+            verifier_cost=cost_metadata["verifier_cost"],
+            total_cost=cost_metadata["total_cost"],
+            savings_percentage=cost_metadata["savings_percentage"],
+            latency_ms=latency_ms,
+        )
+
+        # STEP 4: Inject cost metadata into llmOutput (if enabled)
+        # LangSmith will automatically capture this metadata in traces
+        if self.enable_cost_tracking:
+            try:
+                # Inject into llmOutput
+                if not final_result.llm_output:
+                    final_result.llm_output = {}
+                final_result.llm_output["cascade"] = {
+                    **cost_metadata,
+                    "cascade_decision": cascade_decision,
+                    "invoked_tools": invoked_tool_names or None,
+                    "tool_risk": tool_risk,
+                    "domain": resolved_domain,
+                    "effective_quality_threshold": effective_quality_threshold,
+                    "domain_policy": self._domain_policy(resolved_domain) or None,
+                }
+
+                # Also inject into message's response_metadata
+                if final_result.generations:
+                    gen = final_result.generations[0]
+                    if hasattr(gen, "message") and gen.message:
+                        if not hasattr(gen.message, "response_metadata"):
+                            gen.message.response_metadata = {}
+                        gen.message.response_metadata["cascade"] = final_result.llm_output[
+                            "cascade"
+                        ]
+            except Exception as e:
+                print(f"Warning: Failed to inject cascade metadata: {e}")
+
+        return final_result
+
+    async def _agenerate(
+        self,
+        messages: list[BaseMessage],
+        stop: Optional[list[str]] = None,
+        run_manager: Optional[CallbackManagerForLLMRun] = None,
+        **kwargs: Any,
+    ) -> ChatResult:
+        """Async version of cascade generation logic.
+
+        Args:
+            messages: Input messages
+            stop: Stop sequences
+            run_manager: Callback manager
+            **kwargs: Additional arguments
+
+        Returns:
+            ChatResult with final response and metadata
+        """
+        start_time = time.time()
+
+        # Merge bind kwargs with call kwargs
+        merged_kwargs = {**self._bind_kwargs, **kwargs}
+        if stop:
+            merged_kwargs["stop"] = stop
+
+        # Extract callbacks before filtering (need to pass them explicitly to nested models)
+        callbacks = self._resolve_callbacks(merged_kwargs.get("callbacks", []))
+
+        existing_tags = merged_kwargs.get("tags", []) or []
+        base_tags = existing_tags + ["flowgate"] if existing_tags else ["flowgate"]
+        existing_metadata = merged_kwargs.get("metadata", {}) or {}
+        resolved_domain = self._resolve_domain(messages, existing_metadata)
+        effective_quality_threshold = self._effective_quality_threshold(resolved_domain)
+        force_verifier_for_domain = self._domain_forces_verifier(resolved_domain)
+        domain_direct_to_verifier = self._domain_requires_direct_verifier(resolved_domain)
+        base_metadata = {
+            **existing_metadata,
+            "flowgate": {
+                **existing_metadata.get("flowgate", {}),
+                "integration": "langchain",
+                "domain": resolved_domain,
+                "effective_quality_threshold": effective_quality_threshold,
+            },
+        }
+        if resolved_domain:
+            base_tags = base_tags + [f"flowgate:domain={resolved_domain}"]
+
+        # Filter out callback-related keys that LangChain propagates automatically
+        # Passing these explicitly to nested models would create duplicate parameter errors
+        # NOTE: We keep 'tags' in safe_kwargs and merge with our tags for reliable LangSmith tracking
+        safe_kwargs = {
+            k: v
+            for k, v in merged_kwargs.items()
+            if k not in ("callbacks", "run_manager", "run_id", "stop")
+        }
+
+        # STEP 0: PreRouter - Check if we should bypass cascade
+        use_cascade = True
+        routing_decision = None
+
+        if self.enable_pre_router and self.pre_router:
+            # Extract query text from messages
+            query_text = "\n".join(
+                [msg.content if isinstance(msg.content, str) else "" for msg in messages]
+            )
+
+            # Route based on complexity
+            routing_decision = await self.pre_router.route(query_text)
+            from .routers.base import RoutingStrategy
+
+            use_cascade = routing_decision["strategy"] == RoutingStrategy.CASCADE
+            if not resolved_domain:
+                resolved_domain = self._resolve_domain(
+                    messages, existing_metadata, routing_decision
+                )
+                effective_quality_threshold = self._effective_quality_threshold(resolved_domain)
+                force_verifier_for_domain = self._domain_forces_verifier(resolved_domain)
+                domain_direct_to_verifier = self._domain_requires_direct_verifier(resolved_domain)
+                base_metadata["flowgate"]["domain"] = resolved_domain
+                base_metadata["flowgate"][
+                    "effective_quality_threshold"
+                ] = effective_quality_threshold
+                if resolved_domain:
+                    base_tags = base_tags + [f"flowgate:domain={resolved_domain}"]
+
+            # If direct routing, skip drafter and go straight to verifier
+            if not use_cascade:
+                # Pass only safe kwargs with explicit stop and merged tags for reliable LangSmith tracking
+                verifier_tags = base_tags + [
+                    "flowgate:direct",
+                    "flowgate:verifier",
+                    "verifier",
+                ]
+                verifier_llm_result = await self.verifier.agenerate(
+                    [messages],
+                    stop=stop,
+                    callbacks=callbacks,
+                    **{
+                        **safe_kwargs,
+                        "tags": verifier_tags,
+                        "metadata": {
+                            **base_metadata,
+                            "flowgate": {
+                                **base_metadata["flowgate"],
+                                "decision": "direct",
+                                "role": "verifier",
+                            },
+                        },
+                    },
+                )
+
+                # Convert LLMResult to ChatResult (agenerate returns LLMResult with nested generations)
+                verifier_result = ChatResult(
+                    generations=verifier_llm_result.generations[0],
+                    llm_output=verifier_llm_result.llm_output,
+                )
+
+                latency_ms = (time.time() - start_time) * 1000
+                verifier_model_name = self._resolve_model_name(self.verifier)
+
+                # Store cascade result (direct to verifier)
+                self._last_cascade_result = CascadeResult(
+                    content=verifier_result.generations[0].text,
+                    model_used="verifier",
+                    accepted=False,
+                    drafter_quality=0.0,  # No drafter used (pre-router bypass)
+                    drafter_cost=0.0,
+                    verifier_cost=0.0,
+                    total_cost=0.0,
+                    savings_percentage=0.0,
+                    latency_ms=latency_ms,
+                )
+
+                # Inject metadata if cost tracking enabled
+                if self.enable_cost_tracking:
+                    try:
+                        metadata = {
+                            "cascade_decision": "direct",
+                            "model_used": "verifier",
+                            "routing_reason": routing_decision["reason"],
+                            "complexity": routing_decision.get("metadata", {}).get("complexity"),
+                            "domain": resolved_domain,
+                            "drafter_quality": 0.0,  # No drafter used (pre-router bypass)
+                            "effective_quality_threshold": effective_quality_threshold,
+                        }
+
+                        if not verifier_result.llm_output:
+                            verifier_result.llm_output = {}
+                        verifier_result.llm_output["cascade"] = metadata
+
+                        # Also inject into generation metadata
+                        if verifier_result.generations:
+                            gen = verifier_result.generations[0]
+                            if hasattr(gen, "message") and gen.message:
+                                if not hasattr(gen.message, "response_metadata"):
+                                    gen.message.response_metadata = {}
+                                gen.message.response_metadata["cascade"] = metadata
+                    except Exception as e:
+                        print(f"Warning: Failed to inject cascade metadata: {e}")
+
+                return verifier_result
+
+        if domain_direct_to_verifier:
+            verifier_tags = base_tags + [
+                "flowgate:direct",
+                "flowgate:verifier",
+                "verifier",
+                "flowgate:reason=domain_policy_direct",
+            ]
+            verifier_llm_result = await self.verifier.agenerate(
+                [messages],
+                stop=stop,
+                callbacks=callbacks,
+                **{
+                    **safe_kwargs,
+                    "tags": verifier_tags,
+                    "metadata": {
+                        **base_metadata,
+                        "flowgate": {
+                            **base_metadata["flowgate"],
+                            "decision": "direct",
+                            "role": "verifier",
+                            "reason": "domain_policy_direct",
+                        },
+                    },
+                },
+            )
+            verifier_result = ChatResult(
+                generations=verifier_llm_result.generations[0],
+                llm_output=verifier_llm_result.llm_output,
+            )
+            latency_ms = (time.time() - start_time) * 1000
+            self._last_cascade_result = CascadeResult(
+                content=verifier_result.generations[0].text,
+                model_used="verifier",
+                accepted=False,
+                drafter_quality=0.0,
+                drafter_cost=0.0,
+                verifier_cost=0.0,
+                total_cost=0.0,
+                savings_percentage=0.0,
+                latency_ms=latency_ms,
+            )
+            if self.enable_cost_tracking:
+                try:
+                    metadata = {
+                        "cascade_decision": "direct",
+                        "model_used": "verifier",
+                        "routing_reason": "domain_policy_direct",
+                        "domain": resolved_domain,
+                        "drafter_quality": 0.0,
+                        "effective_quality_threshold": effective_quality_threshold,
+                    }
+                    if not verifier_result.llm_output:
+                        verifier_result.llm_output = {}
+                    verifier_result.llm_output["cascade"] = metadata
+                    if verifier_result.generations:
+                        gen = verifier_result.generations[0]
+                        if hasattr(gen, "message") and gen.message:
+                            if not hasattr(gen.message, "response_metadata"):
+                                gen.message.response_metadata = {}
+                            gen.message.response_metadata["cascade"] = metadata
+                except Exception as e:
+                    print(f"Warning: Failed to inject cascade metadata: {e}")
+            return verifier_result
+
+        # STEP 1: Execute drafter (cheap, fast model)
+        # Merge existing tags from config with drafter tag for reliable LangSmith tracking
+        drafter_tags = base_tags + ["flowgate:drafter", "drafter"]
+        drafter_llm_result = await self.drafter.agenerate(
+            [messages],
+            stop=stop,
+            callbacks=callbacks,
+            **{
+                **safe_kwargs,
+                "tags": drafter_tags,
+                "metadata": {
+                    **base_metadata,
+                    "flowgate": {
+                        **base_metadata["flowgate"],
+                        "decision": "draft",
+                        "role": "drafter",
+                    },
+                },
+            },
+        )
+
+        # Convert LLMResult to ChatResult
+        drafter_result = ChatResult(
+            generations=drafter_llm_result.generations[0], llm_output=drafter_llm_result.llm_output
+        )
+
+        # Calculate drafter quality
+        quality_func = self.quality_validator or calculate_quality
+        drafter_tool_calls = extract_tool_calls(drafter_result)
+        invoked_tool_names = self._extract_tool_call_names(drafter_tool_calls)
+
+        tool_risk = None
+        force_verifier_for_tool_risk = False
+        if invoked_tool_names:
+            invoked_defs = [self._get_tool_def_for_name(n) for n in invoked_tool_names]
+            tool_risk = self._sanitize_tool_risk(get_tool_risk_routing(invoked_defs))
+            force_verifier_for_tool_risk = bool(tool_risk.get("use_verifier"))
+
+        drafter_quality = quality_func(drafter_result)
+
+        # STEP 2: Check quality threshold and domain policy.
+        accepted = self._should_accept_drafter(
+            drafter_quality=drafter_quality,
+            invoked_tool_names=invoked_tool_names,
+            force_verifier_for_tool_risk=force_verifier_for_tool_risk,
+            force_verifier_for_domain=force_verifier_for_domain,
+            quality_threshold=effective_quality_threshold,
+        )
+
+        if accepted:
+            # Quality is sufficient - use drafter response
+            final_result = drafter_result
+            verifier_result = None
+        else:
+            # Quality insufficient - execute verifier (expensive, accurate model)
+            # Pass only safe kwargs with explicit stop and merged tags for reliable LangSmith tracking
+            if force_verifier_for_tool_risk:
+                reason = "tool_risk"
+            elif force_verifier_for_domain:
+                reason = "domain_policy"
+            else:
+                reason = "quality"
+            verifier_tags = base_tags + [
+                "flowgate:verifier",
+                "verifier",
+                "flowgate:escalated",
+                f"flowgate:reason={reason}",
+            ]
+            if tool_risk and tool_risk.get("max_risk_name"):
+                verifier_tags.append(f"flowgate:toolrisk={tool_risk['max_risk_name']}")
+            verifier_llm_result = await self.verifier.agenerate(
+                [messages],
+                stop=stop,
+                callbacks=callbacks,
+                **{
+                    **safe_kwargs,
+                    "tags": verifier_tags,
+                    "metadata": {
+                        **base_metadata,
+                        "flowgate": {
+                            **base_metadata["flowgate"],
+                            "decision": "verify",
+                            "role": "verifier",
+                            "reason": reason,
+                            "tool_risk": tool_risk,
+                            "domain_policy": self._domain_policy(resolved_domain) or None,
+                        },
+                    },
+                },
+            )
+            # Convert LLMResult to ChatResult
+            verifier_result = ChatResult(
+                generations=verifier_llm_result.generations[0],
+                llm_output=verifier_llm_result.llm_output,
+            )
+            final_result = verifier_result
+
+        # STEP 3: Calculate costs and metadata
+        latency_ms = (time.time() - start_time) * 1000
+        drafter_model_name = self._resolve_model_name(self.drafter)
+        verifier_model_name = self._resolve_model_name(self.verifier)
+
+        cost_metadata = create_cost_metadata(
+            drafter_result,
+            verifier_result,
+            drafter_model_name,
+            verifier_model_name,
+            accepted,
+            drafter_quality,
+            self.cost_tracking_provider,
+        )
+
+        cascade_decision = (
+            ("tool_call" if accepted else "tool_risk")
+            if invoked_tool_names and not force_verifier_for_domain
+            else (
+                "accepted"
+                if accepted
+                else ("domain_policy" if force_verifier_for_domain else "quality")
+            )
+        )
+
+        # Store cascade result
+        self._last_cascade_result = CascadeResult(
+            content=final_result.generations[0].text,
+            model_used="drafter" if accepted else "verifier",
+            drafter_quality=drafter_quality,
+            accepted=accepted,
+            drafter_cost=cost_metadata["drafter_cost"],
+            verifier_cost=cost_metadata["verifier_cost"],
+            total_cost=cost_metadata["total_cost"],
+            savings_percentage=cost_metadata["savings_percentage"],
+            latency_ms=latency_ms,
+        )
+
+        # STEP 4: Inject cost metadata
+        if self.enable_cost_tracking:
+            try:
+                if not final_result.llm_output:
+                    final_result.llm_output = {}
+                final_result.llm_output["cascade"] = {
+                    **cost_metadata,
+                    "cascade_decision": cascade_decision,
+                    "invoked_tools": invoked_tool_names or None,
+                    "tool_risk": tool_risk,
+                    "domain": resolved_domain,
+                    "effective_quality_threshold": effective_quality_threshold,
+                    "domain_policy": self._domain_policy(resolved_domain) or None,
+                }
+
+                # Also inject into message's response_metadata
+                if final_result.generations:
+                    gen = final_result.generations[0]
+                    if hasattr(gen, "message") and gen.message:
+                        if not hasattr(gen.message, "response_metadata"):
+                            gen.message.response_metadata = {}
+                        gen.message.response_metadata["cascade"] = final_result.llm_output[
+                            "cascade"
+                        ]
+            except Exception as e:
+                print(f"Warning: Failed to inject cascade metadata: {e}")
+
+        return final_result
+
+    def get_last_cascade_result(self) -> Optional[CascadeResult]:
+        """Get the last cascade execution result.
+
+        Returns:
+            CascadeResult with metadata from the last invocation, or None
+        """
+        return self._last_cascade_result
+
+    def _stream(
+        self,
+        messages: list[BaseMessage],
+        stop: Optional[list[str]] = None,
+        run_manager: Optional[CallbackManagerForLLMRun] = None,
+        **kwargs: Any,
+    ) -> Iterator[ChatGenerationChunk]:
+        """Stream responses with optimistic drafter execution.
+
+        Uses the proven cascade streaming pattern:
+        1. Stream drafter optimistically (user sees real-time output)
+        2. Collect chunks and check quality after completion
+        3. If quality insufficient: show switch message + stream verifier
+
+        Args:
+            messages: Input messages
+            stop: Stop sequences
+            run_manager: Callback manager
+            **kwargs: Additional arguments
+
+        Yields:
+            ChatGenerationChunk instances with streaming content
+        """
+        start_time = time.time()
+
+        # Merge bind kwargs with call kwargs
+        merged_kwargs = {**self._bind_kwargs, **kwargs}
+        stream_kwargs, base_config = self._split_runnable_config(merged_kwargs)
+        base_tags = (base_config.get("tags") or []) + ["flowgate"]
+        existing_metadata = base_config.get("metadata", {}) or {}
+        callbacks = self._resolve_callbacks(base_config.get("callbacks", []))
+        resolved_domain = self._resolve_domain(messages, existing_metadata)
+        effective_quality_threshold = self._effective_quality_threshold(resolved_domain)
+        force_verifier_for_domain = self._domain_forces_verifier(resolved_domain)
+        domain_direct_to_verifier = self._domain_requires_direct_verifier(resolved_domain)
+        base_metadata = {
+            **existing_metadata,
+            "flowgate": {
+                **(
+                    base_config.get("metadata", {}).get("flowgate", {})
+                    if isinstance(base_config.get("metadata"), dict)
+                    else {}
+                ),
+                "integration": "langchain",
+                "streaming": True,
+                "domain": resolved_domain,
+                "effective_quality_threshold": effective_quality_threshold,
+            },
+        }
+        if resolved_domain:
+            base_tags = base_tags + [f"flowgate:domain={resolved_domain}"]
+        emit_switch_message = bool(base_metadata.get("flowgate_emit_switch_message"))
+
+        def stream_config(tags: list[str], metadata: dict[str, Any]) -> dict[str, Any]:
+            config: dict[str, Any] = {"tags": tags, "metadata": metadata}
+            if callbacks:
+                config["callbacks"] = callbacks
+            return config
+
+        # STEP 0: PreRouter - Check if we should bypass cascade
+        use_cascade = True
+        routing_decision = None
+
+        if self.enable_pre_router and self.pre_router:
+            # Extract query text from messages
+            query_text = "\n".join(
+                [msg.content if isinstance(msg.content, str) else "" for msg in messages]
+            )
+
+            # Route based on complexity (sync call for sync streaming)
+            routing_decision = self._route_query_sync(query_text)
+            from .routers.base import RoutingStrategy
+
+            use_cascade = (
+                routing_decision is None
+                or routing_decision.get("strategy") == RoutingStrategy.CASCADE
+            )
+            if not resolved_domain:
+                resolved_domain = self._resolve_domain(
+                    messages, existing_metadata, routing_decision
+                )
+                effective_quality_threshold = self._effective_quality_threshold(resolved_domain)
+                force_verifier_for_domain = self._domain_forces_verifier(resolved_domain)
+                domain_direct_to_verifier = self._domain_requires_direct_verifier(resolved_domain)
+                base_metadata["flowgate"]["domain"] = resolved_domain
+                base_metadata["flowgate"][
+                    "effective_quality_threshold"
+                ] = effective_quality_threshold
+                if resolved_domain:
+                    base_tags = base_tags + [f"flowgate:domain={resolved_domain}"]
+
+            # If direct routing, stream verifier only
+            if (routing_decision is not None and not use_cascade) or domain_direct_to_verifier:
+                for chunk in self.verifier.stream(
+                    messages,
+                    stop=stop,
+                    config={
+                        **base_config,
+                        "tags": base_tags
+                        + ["flowgate:direct", "flowgate:verifier", "verifier"],
+                        "metadata": {
+                            **base_metadata,
+                            "flowgate": {
+                                **base_metadata["flowgate"],
+                                "decision": "direct",
+                                "role": "verifier",
+                                "reason": (
+                                    "domain_policy_direct"
+                                    if domain_direct_to_verifier
+                                    else "pre_router_direct"
+                                ),
+                            },
+                        },
+                    },
+                    **{
+                        **stream_kwargs,
+                    },
+                ):
+                    yield ChatGenerationChunk(
+                        message=chunk, text=chunk.content if isinstance(chunk.content, str) else ""
+                    )
+                return
+
+        if domain_direct_to_verifier:
+            for chunk in self.verifier.stream(
+                messages,
+                **{
+                    **merged_kwargs,
+                    "tags": base_tags
+                    + [
+                        "flowgate:direct",
+                        "flowgate:verifier",
+                        "verifier",
+                        "flowgate:reason=domain_policy_direct",
+                    ],
+                    "metadata": {
+                        **base_metadata,
+                        "flowgate": {
+                            **base_metadata["flowgate"],
+                            "decision": "direct",
+                            "role": "verifier",
+                            "reason": "domain_policy_direct",
+                        },
+                    },
+                },
+            ):
+                yield ChatGenerationChunk(
+                    message=chunk, text=chunk.content if isinstance(chunk.content, str) else ""
+                )
+            return
+
+        tools_bound = bool(self._bound_tool_defs)
+        drafter_chunks: list[AIMessageChunk] = []
+        drafter_content = ""
+
+        for chunk in self.drafter.stream(
+            messages,
+            stop=stop,
+            config={
+                **base_config,
+                "tags": base_tags + ["flowgate:drafter", "drafter"],
+                "metadata": {
+                    **base_metadata,
+                    "flowgate": {
+                        **base_metadata["flowgate"],
+                        "decision": "draft",
+                        "role": "drafter",
+                    },
+                },
+            },
+            **{
+                **stream_kwargs,
+            },
+        ):
+            chunk_text = chunk.content if isinstance(chunk.content, str) else ""
+            drafter_content += chunk_text
+            drafter_chunks.append(chunk)
+            if not tools_bound:
+                yield ChatGenerationChunk(message=chunk, text=chunk_text)
+
+        # STEP 2: Quality check after drafter completes
+        combined_chunk = None
+        for c in drafter_chunks:
+            combined_chunk = c if combined_chunk is None else combined_chunk + c
+
+        combined_message = (
+            AIMessage(
+                content=(
+                    combined_chunk.content
+                    if combined_chunk and isinstance(combined_chunk.content, str)
+                    else drafter_content
+                ),
+                additional_kwargs=(
+                    getattr(combined_chunk, "additional_kwargs", {}) if combined_chunk else {}
+                ),
+                tool_calls=getattr(combined_chunk, "tool_calls", None) if combined_chunk else None,
+                invalid_tool_calls=(
+                    getattr(combined_chunk, "invalid_tool_calls", None) if combined_chunk else None
+                ),
+                response_metadata=(
+                    getattr(combined_chunk, "response_metadata", {}) if combined_chunk else {}
+                ),
+            )
+            if combined_chunk
+            else AIMessage(content=drafter_content)
+        )
+        drafter_result = ChatResult(
+            generations=[ChatGeneration(text=drafter_content, message=combined_message)],
+            llm_output={},
+        )
+
+        quality_func = self.quality_validator or calculate_quality
+        drafter_tool_calls = extract_tool_calls(drafter_result)
+        invoked_tool_names = self._extract_tool_call_names(drafter_tool_calls)
+        tool_risk = None
+        force_verifier_for_tool_risk = False
+        if invoked_tool_names:
+            invoked_defs = [self._get_tool_def_for_name(n) for n in invoked_tool_names]
+            tool_risk = self._sanitize_tool_risk(get_tool_risk_routing(invoked_defs))
+            force_verifier_for_tool_risk = bool(tool_risk.get("use_verifier"))
+
+        drafter_quality = quality_func(drafter_result)
+        accepted = self._should_accept_drafter(
+            drafter_quality=drafter_quality,
+            invoked_tool_names=invoked_tool_names,
+            force_verifier_for_tool_risk=force_verifier_for_tool_risk,
+            force_verifier_for_domain=force_verifier_for_domain,
+            quality_threshold=effective_quality_threshold,
+        )
+
+        # STEP 3: If quality insufficient, cascade to verifier
+        if not accepted:
+            if emit_switch_message and not tools_bound:
+                verifier_model_name = (
+                    getattr(self.verifier, "model_name", None)
+                    or getattr(self.verifier, "model", None)
+                    or "verifier"
+                )
+                switch_message = f"\n\n[FlowGate] Escalating to {verifier_model_name} (quality: {drafter_quality:.2f} < {effective_quality_threshold})\n\n"
+                yield ChatGenerationChunk(
+                    message=AIMessageChunk(content=switch_message), text=switch_message
+                )
+
+            # Stream from verifier
+            if force_verifier_for_tool_risk:
+                reason = "tool_risk"
+            elif force_verifier_for_domain:
+                reason = "domain_policy"
+            else:
+                reason = "quality"
+            verifier_tags = base_tags + [
+                "flowgate:verifier",
+                "verifier",
+                "flowgate:escalated",
+                f"flowgate:reason={reason}",
+            ]
+            if tool_risk and tool_risk.get("max_risk_name"):
+                verifier_tags.append(f"flowgate:toolrisk={tool_risk['max_risk_name']}")
+
+            for chunk in self.verifier.stream(
+                messages,
+                stop=stop,
+                config={
+                    **base_config,
+                    "tags": verifier_tags,
+                    "metadata": {
+                        **base_metadata,
+                        "flowgate": {
+                            **base_metadata["flowgate"],
+                            "decision": "verify",
+                            "role": "verifier",
+                            "reason": reason,
+                            "tool_risk": tool_risk,
+                            "domain_policy": self._domain_policy(resolved_domain) or None,
+                        },
+                    },
+                },
+                **{
+                    **stream_kwargs,
+                },
+            ):
+                chunk_text = chunk.content if isinstance(chunk.content, str) else ""
+                yield ChatGenerationChunk(message=chunk, text=chunk_text)
+            return
+
+        if tools_bound:
+            for chunk in drafter_chunks:
+                chunk_text = chunk.content if isinstance(chunk.content, str) else ""
+                yield ChatGenerationChunk(message=chunk, text=chunk_text)
+
+        # Calculate cost metadata (streaming mode has limited token usage data)
+        drafter_model_name = self._resolve_model_name(self.drafter)
+        verifier_model_name = self._resolve_model_name(self.verifier)
+
+        # Create verifier result if escalated (synthetic, no usage data in streaming)
+        verifier_result = None
+        if not accepted:
+            verifier_result = ChatResult(generations=[], llm_output={})
+
+        cost_metadata = create_cost_metadata(
+            drafter_result,
+            verifier_result,
+            drafter_model_name,
+            verifier_model_name,
+            accepted,
+            drafter_quality,
+            self.cost_tracking_provider,
+        )
+
+        # Store cascade result
+        latency_ms = (time.time() - start_time) * 1000
+        self._last_cascade_result = CascadeResult(
+            content=drafter_content,
+            model_used="drafter" if accepted else "verifier",
+            drafter_quality=drafter_quality,
+            accepted=accepted,
+            drafter_cost=cost_metadata["drafter_cost"],
+            verifier_cost=cost_metadata["verifier_cost"],
+            total_cost=cost_metadata["total_cost"],
+            savings_percentage=cost_metadata["savings_percentage"],
+            latency_ms=latency_ms,
+        )
+
+    async def _astream(
+        self,
+        messages: list[BaseMessage],
+        stop: Optional[list[str]] = None,
+        run_manager: Optional[CallbackManagerForLLMRun] = None,
+        **kwargs: Any,
+    ) -> AsyncIterator[ChatGenerationChunk]:
+        """Async stream responses with optimistic drafter execution.
+
+        Uses the proven cascade streaming pattern:
+        1. Stream drafter optimistically (user sees real-time output)
+        2. Collect chunks and check quality after completion
+        3. If quality insufficient: show switch message + stream verifier
+
+        Args:
+            messages: Input messages
+            stop: Stop sequences
+            run_manager: Callback manager
+            **kwargs: Additional arguments
+
+        Yields:
+            ChatGenerationChunk instances with streaming content
+        """
+        start_time = time.time()
+
+        # Merge bind kwargs with call kwargs
+        merged_kwargs = {**self._bind_kwargs, **kwargs}
+        stream_kwargs, base_config = self._split_runnable_config(merged_kwargs)
+        base_tags = (base_config.get("tags") or []) + ["flowgate"]
+        existing_metadata = base_config.get("metadata", {}) or {}
+        callbacks = self._resolve_callbacks(base_config.get("callbacks", []))
+        safe_kwargs = {
+            k: v
+            for k, v in stream_kwargs.items()
+            if k not in ("callbacks", "run_manager", "run_id", "tags", "metadata")
+        }
+        resolved_domain = self._resolve_domain(messages, existing_metadata)
+        effective_quality_threshold = self._effective_quality_threshold(resolved_domain)
+        force_verifier_for_domain = self._domain_forces_verifier(resolved_domain)
+        domain_direct_to_verifier = self._domain_requires_direct_verifier(resolved_domain)
+        base_metadata = {
+            **existing_metadata,
+            "flowgate": {
+                **(
+                    base_config.get("metadata", {}).get("flowgate", {})
+                    if isinstance(base_config.get("metadata"), dict)
+                    else {}
+                ),
+                "integration": "langchain",
+                "streaming": True,
+                "domain": resolved_domain,
+                "effective_quality_threshold": effective_quality_threshold,
+            },
+        }
+        if resolved_domain:
+            base_tags = base_tags + [f"flowgate:domain={resolved_domain}"]
+        emit_switch_message = bool(base_metadata.get("flowgate_emit_switch_message"))
+
+        def stream_config(tags: list[str], metadata: dict[str, Any]) -> dict[str, Any]:
+            config: dict[str, Any] = {"tags": tags, "metadata": metadata}
+            if callbacks:
+                config["callbacks"] = callbacks
+            return config
+
+        # STEP 0: PreRouter - Check if we should bypass cascade
+        use_cascade = True
+        routing_decision = None
+
+        if self.enable_pre_router and self.pre_router:
+            # Extract query text from messages
+            query_text = "\n".join(
+                [msg.content if isinstance(msg.content, str) else "" for msg in messages]
+            )
+
+            # Route based on complexity
+            routing_decision = await self.pre_router.route(query_text)
+            from .routers.base import RoutingStrategy
+
+            use_cascade = routing_decision["strategy"] == RoutingStrategy.CASCADE
+            if not resolved_domain:
+                resolved_domain = self._resolve_domain(
+                    messages, existing_metadata, routing_decision
+                )
+                effective_quality_threshold = self._effective_quality_threshold(resolved_domain)
+                force_verifier_for_domain = self._domain_forces_verifier(resolved_domain)
+                domain_direct_to_verifier = self._domain_requires_direct_verifier(resolved_domain)
+                base_metadata["flowgate"]["domain"] = resolved_domain
+                base_metadata["flowgate"][
+                    "effective_quality_threshold"
+                ] = effective_quality_threshold
+                if resolved_domain:
+                    base_tags = base_tags + [f"flowgate:domain={resolved_domain}"]
+
+            # If direct routing, stream verifier only
+            if not use_cascade or domain_direct_to_verifier:
+                async for chunk in self.verifier.astream(
+                    messages,
+                    config=stream_config(
+                        base_tags + ["flowgate:direct", "flowgate:verifier", "verifier"],
+                        {
+                            **base_metadata,
+                            "flowgate": {
+                                **base_metadata["flowgate"],
+                                "decision": "direct",
+                                "role": "verifier",
+                                "reason": (
+                                    "domain_policy_direct"
+                                    if domain_direct_to_verifier
+                                    else "pre_router_direct"
+                                ),
+                            },
+                        },
+                    ),
+                    **safe_kwargs,
+                ):
+                    yield ChatGenerationChunk(
+                        message=chunk, text=chunk.content if isinstance(chunk.content, str) else ""
+                    )
+                return
+
+        if domain_direct_to_verifier:
+            async for chunk in self.verifier.astream(
+                messages,
+                config=stream_config(
+                    base_tags
+                    + [
+                        "flowgate:direct",
+                        "flowgate:verifier",
+                        "verifier",
+                        "flowgate:reason=domain_policy_direct",
+                    ],
+                    {
+                        **base_metadata,
+                        "flowgate": {
+                            **base_metadata["flowgate"],
+                            "decision": "direct",
+                            "role": "verifier",
+                            "reason": "domain_policy_direct",
+                        },
+                    },
+                ),
+                **safe_kwargs,
+            ):
+                yield ChatGenerationChunk(
+                    message=chunk, text=chunk.content if isinstance(chunk.content, str) else ""
+                )
+            return
+
+        tools_bound = bool(self._bound_tool_defs)
+        drafter_chunks: list[AIMessageChunk] = []
+        drafter_content = ""
+
+        async for chunk in self.drafter.astream(
+            messages,
+            config=stream_config(
+                base_tags + ["flowgate:drafter", "drafter"],
+                {
+                    **base_metadata,
+                    "flowgate": {
+                        **base_metadata["flowgate"],
+                        "decision": "draft",
+                        "role": "drafter",
+                    },
+                },
+            ),
+            **safe_kwargs,
+        ):
+            chunk_text = chunk.content if isinstance(chunk.content, str) else ""
+            drafter_content += chunk_text
+            drafter_chunks.append(chunk)
+            if not tools_bound:
+                yield ChatGenerationChunk(message=chunk, text=chunk_text)
+
+        # STEP 2: Quality check after drafter completes
+        combined_chunk = None
+        for c in drafter_chunks:
+            combined_chunk = c if combined_chunk is None else combined_chunk + c
+
+        combined_message = (
+            AIMessage(
+                content=(
+                    combined_chunk.content
+                    if combined_chunk and isinstance(combined_chunk.content, str)
+                    else drafter_content
+                ),
+                additional_kwargs=(
+                    getattr(combined_chunk, "additional_kwargs", {}) if combined_chunk else {}
+                ),
+                tool_calls=getattr(combined_chunk, "tool_calls", None) if combined_chunk else None,
+                invalid_tool_calls=(
+                    getattr(combined_chunk, "invalid_tool_calls", None) if combined_chunk else None
+                ),
+                response_metadata=(
+                    getattr(combined_chunk, "response_metadata", {}) if combined_chunk else {}
+                ),
+            )
+            if combined_chunk
+            else AIMessage(content=drafter_content)
+        )
+        drafter_result = ChatResult(
+            generations=[ChatGeneration(text=drafter_content, message=combined_message)],
+            llm_output={},
+        )
+
+        quality_func = self.quality_validator or calculate_quality
+        drafter_tool_calls = extract_tool_calls(drafter_result)
+        invoked_tool_names = self._extract_tool_call_names(drafter_tool_calls)
+        tool_risk = None
+        force_verifier_for_tool_risk = False
+        if invoked_tool_names:
+            invoked_defs = [self._get_tool_def_for_name(n) for n in invoked_tool_names]
+            tool_risk = self._sanitize_tool_risk(get_tool_risk_routing(invoked_defs))
+            force_verifier_for_tool_risk = bool(tool_risk.get("use_verifier"))
+
+        drafter_quality = quality_func(drafter_result)
+        accepted = self._should_accept_drafter(
+            drafter_quality=drafter_quality,
+            invoked_tool_names=invoked_tool_names,
+            force_verifier_for_tool_risk=force_verifier_for_tool_risk,
+            force_verifier_for_domain=force_verifier_for_domain,
+            quality_threshold=effective_quality_threshold,
+        )
+
+        # STEP 3: If quality insufficient, cascade to verifier
+        if not accepted:
+            if emit_switch_message and not tools_bound:
+                verifier_model_name = (
+                    getattr(self.verifier, "model_name", None)
+                    or getattr(self.verifier, "model", None)
+                    or "verifier"
+                )
+                switch_message = f"\n\n[FlowGate] Escalating to {verifier_model_name} (quality: {drafter_quality:.2f} < {effective_quality_threshold})\n\n"
+                yield ChatGenerationChunk(
+                    message=AIMessageChunk(content=switch_message), text=switch_message
+                )
+
+            # Stream from verifier
+            if force_verifier_for_tool_risk:
+                reason = "tool_risk"
+            elif force_verifier_for_domain:
+                reason = "domain_policy"
+            else:
+                reason = "quality"
+            verifier_tags = base_tags + [
+                "flowgate:verifier",
+                "verifier",
+                "flowgate:escalated",
+                f"flowgate:reason={reason}",
+            ]
+            if tool_risk and tool_risk.get("max_risk_name"):
+                verifier_tags.append(f"flowgate:toolrisk={tool_risk['max_risk_name']}")
+
+            async for chunk in self.verifier.astream(
+                messages,
+                config=stream_config(
+                    verifier_tags,
+                    {
+                        **base_metadata,
+                        "flowgate": {
+                            **base_metadata["flowgate"],
+                            "decision": "verify",
+                            "role": "verifier",
+                            "reason": reason,
+                            "tool_risk": tool_risk,
+                            "domain_policy": self._domain_policy(resolved_domain) or None,
+                        },
+                    },
+                ),
+                **safe_kwargs,
+            ):
+                chunk_text = chunk.content if isinstance(chunk.content, str) else ""
+                yield ChatGenerationChunk(message=chunk, text=chunk_text)
+            return
+
+        if tools_bound:
+            for chunk in drafter_chunks:
+                chunk_text = chunk.content if isinstance(chunk.content, str) else ""
+                yield ChatGenerationChunk(message=chunk, text=chunk_text)
+
+        # Calculate cost metadata (streaming mode has limited token usage data)
+        drafter_model_name = self._resolve_model_name(self.drafter)
+        verifier_model_name = self._resolve_model_name(self.verifier)
+
+        # Create verifier result if escalated (synthetic, no usage data in streaming)
+        verifier_result = None
+        if not accepted:
+            verifier_result = ChatResult(generations=[], llm_output={})
+
+        cost_metadata = create_cost_metadata(
+            drafter_result,
+            verifier_result,
+            drafter_model_name,
+            verifier_model_name,
+            accepted,
+            drafter_quality,
+            self.cost_tracking_provider,
+        )
+
+        # Store cascade result
+        latency_ms = (time.time() - start_time) * 1000
+        self._last_cascade_result = CascadeResult(
+            content=drafter_content,
+            model_used="drafter" if accepted else "verifier",
+            drafter_quality=drafter_quality,
+            accepted=accepted,
+            drafter_cost=cost_metadata["drafter_cost"],
+            verifier_cost=cost_metadata["verifier_cost"],
+            total_cost=cost_metadata["total_cost"],
+            savings_percentage=cost_metadata["savings_percentage"],
+            latency_ms=latency_ms,
+        )
+
+    def bind(self, **kwargs: Any) -> "FlowGate":
+        """Create a new FlowGate with bound parameters.
+
+        Args:
+            **kwargs: Parameters to bind
+
+        Returns:
+            New FlowGate instance with merged parameters
+        """
+        # Merge new kwargs with existing ones
+        merged_kwargs = {**self._bind_kwargs, **kwargs}
+
+        # Remove callbacks from bind_kwargs - they should be passed per-invocation, not bound
+        # This prevents duplicate callback parameter errors in LangChain's internals
+        merged_kwargs.pop("callbacks", None)
+
+        new_instance = FlowGate(
+            drafter=self.drafter,
+            verifier=self.verifier,
+            quality_threshold=self.quality_threshold,
+            enable_cost_tracking=self.enable_cost_tracking,
+            cost_tracking_provider=self.cost_tracking_provider,
+            quality_validator=self.quality_validator,
+            enable_pre_router=self.enable_pre_router,
+            pre_router=self.pre_router,
+            cascade_complexities=self.cascade_complexities,
+            domain_policies=self.domain_policies,
+        )
+        new_instance._bind_kwargs = merged_kwargs
+        new_instance._bound_tool_defs = self._bound_tool_defs[:] if self._bound_tool_defs else None
+
+        return new_instance
+
+    def bind_tools(
+        self,
+        tools: Any,
+        *,
+        tool_choice: Any = None,
+        **kwargs: Any,
+    ) -> "FlowGate":
+        """Bind tools to both drafter and verifier models.
+
+        This method overrides the inherited BaseChatModel.bind_tools() to ensure
+        tools are properly bound to both the drafter and verifier models used in
+        the cascade. The inherited version would only wrap the FlowGate instance,
+        leaving the internal models without tool access.
+
+        Args:
+            tools: Sequence of tools to bind (dicts, types, callables, or BaseTool instances)
+            tool_choice: The tool to use (e.g., "any", "auto", or specific tool name)
+            **kwargs: Additional arguments to pass to bind_tools()
+
+        Returns:
+            New FlowGate instance with tools bound to both drafter and verifier
+
+        Example:
+            >>> from langchain_openai import ChatOpenAI
+            >>> from flowgate.langchain import FlowGate
+            >>>
+            >>> drafter = ChatOpenAI(model='gpt-4o-mini')
+            >>> verifier = ChatOpenAI(model='gpt-4o')
+            >>> cascade = FlowGate(drafter=drafter, verifier=verifier)
+            >>>
+            >>> # Bind tools to both models
+            >>> tools = [{"name": "calculator", "description": "...", "parameters": {...}}]
+            >>> cascade_with_tools = cascade.bind_tools(tools)
+            >>> result = await cascade_with_tools.ainvoke("What is 15 + 27?")
+        """
+        # Check if models support bind_tools
+        if not hasattr(self.drafter, "bind_tools"):
+            raise AttributeError(
+                f"Drafter model ({type(self.drafter).__name__}) does not support bind_tools(). "
+                "Ensure you're using a model that supports tool calling."
+            )
+        if not hasattr(self.verifier, "bind_tools"):
+            raise AttributeError(
+                f"Verifier model ({type(self.verifier).__name__}) does not support bind_tools(). "
+                "Ensure you're using a model that supports tool calling."
+            )
+
+        # Bind tools to both drafter and verifier
+        bound_drafter = self.drafter.bind_tools(tools, tool_choice=tool_choice, **kwargs)
+        bound_verifier = self.verifier.bind_tools(tools, tool_choice=tool_choice, **kwargs)
+        drafter_model, drafter_bind_kwargs = self._unwrap_bound_runnable(bound_drafter)
+        verifier_model, verifier_bind_kwargs = self._unwrap_bound_runnable(bound_verifier)
+
+        # Create new FlowGate with bound models
+        new_instance = FlowGate(
+            drafter=drafter_model,
+            verifier=verifier_model,
+            quality_threshold=self.quality_threshold,
+            enable_cost_tracking=self.enable_cost_tracking,
+            cost_tracking_provider=self.cost_tracking_provider,
+            quality_validator=self.quality_validator,
+            enable_pre_router=self.enable_pre_router,
+            pre_router=self.pre_router,
+            cascade_complexities=self.cascade_complexities,
+            domain_policies=self.domain_policies,
+        )
+        # Preserve any bound kwargs
+        new_instance._bind_kwargs = {
+            **self._bind_kwargs.copy(),
+            **drafter_bind_kwargs,
+            **verifier_bind_kwargs,
+        }
+        new_instance._bound_tool_defs = self._normalize_tool_defs(tools)
+
+        return new_instance
+
+    def with_structured_output(
+        self,
+        schema: Any,
+        *,
+        include_raw: bool = False,
+        **kwargs: Any,
+    ) -> "FlowGate":
+        """Bind structured output schema to both drafter and verifier models.
+
+        This method overrides the inherited BaseChatModel.with_structured_output() to
+        ensure the schema is properly bound to both the drafter and verifier models used
+        in the cascade. The inherited version would only wrap the FlowGate instance,
+        leaving the internal models without schema access.
+
+        Args:
+            schema: The output schema (Pydantic model, TypedDict, or JSON schema dict)
+            include_raw: Whether to include the raw message alongside the parsed output
+            **kwargs: Additional arguments to pass to with_structured_output()
+
+        Returns:
+            New FlowGate instance with structured output bound to both models
+
+        Example:
+            >>> from langchain_openai import ChatOpenAI
+            >>> from flowgate.langchain import FlowGate
+            >>> from pydantic import BaseModel, Field
+            >>>
+            >>> class User(BaseModel):
+            ...     name: str = Field(description="User's name")
+            ...     age: int = Field(description="User's age")
+            ...     email: str = Field(description="User's email")
+            >>>
+            >>> drafter = ChatOpenAI(model='gpt-4o-mini')
+            >>> verifier = ChatOpenAI(model='gpt-4o')
+            >>> cascade = FlowGate(drafter=drafter, verifier=verifier)
+            >>>
+            >>> # Bind structured output to both models
+            >>> cascade_structured = cascade.with_structured_output(User)
+            >>> user = await cascade_structured.ainvoke("Extract: John, 28, john@email.com")
+            >>> print(user.name)  # "John"
+        """
+        # Check if models support with_structured_output
+        if not hasattr(self.drafter, "with_structured_output"):
+            raise AttributeError(
+                f"Drafter model ({type(self.drafter).__name__}) does not support "
+                "with_structured_output(). Ensure you're using a model that supports "
+                "structured output."
+            )
+        if not hasattr(self.verifier, "with_structured_output"):
+            raise AttributeError(
+                f"Verifier model ({type(self.verifier).__name__}) does not support "
+                "with_structured_output(). Ensure you're using a model that supports "
+                "structured output."
+            )
+
+        # Bind structured output to both drafter and verifier
+        bound_drafter = self.drafter.with_structured_output(
+            schema, include_raw=include_raw, **kwargs
+        )
+        bound_verifier = self.verifier.with_structured_output(
+            schema, include_raw=include_raw, **kwargs
+        )
+
+        # Create new FlowGate with bound models
+        new_instance = FlowGate(
+            drafter=bound_drafter,
+            verifier=bound_verifier,
+            quality_threshold=self.quality_threshold,
+            enable_cost_tracking=self.enable_cost_tracking,
+            cost_tracking_provider=self.cost_tracking_provider,
+            quality_validator=self.quality_validator,
+            enable_pre_router=self.enable_pre_router,
+            pre_router=self.pre_router,
+            cascade_complexities=self.cascade_complexities,
+            domain_policies=self.domain_policies,
+        )
+        # Preserve any bound kwargs
+        new_instance._bind_kwargs = self._bind_kwargs.copy()
+        new_instance._bound_tool_defs = self._bound_tool_defs[:] if self._bound_tool_defs else None
+
+        return new_instance
+
+    def _normalize_domain(self, value: Any) -> Optional[str]:
+        if not isinstance(value, str):
+            return None
+        normalized = value.strip().lower()
+        return normalized or None
+
+    def _resolve_domain(
+        self,
+        messages: list[BaseMessage],
+        metadata: Optional[dict[str, Any]],
+        routing_decision: Optional[dict[str, Any]] = None,
+    ) -> Optional[str]:
+        metadata = metadata or {}
+        cascade_metadata = metadata.get("flowgate", {}) if isinstance(metadata, dict) else {}
+        if isinstance(cascade_metadata, dict):
+            direct = self._normalize_domain(cascade_metadata.get("domain"))
+            if direct:
+                return direct
+
+        for key in ("flowgate_domain", "domain"):
+            direct = self._normalize_domain(
+                metadata.get(key) if isinstance(metadata, dict) else None
+            )
+            if direct:
+                return direct
+
+        routing_metadata = (routing_decision or {}).get("metadata", {})
+        if isinstance(routing_metadata, dict):
+            direct = self._normalize_domain(routing_metadata.get("domain"))
+            if direct:
+                return direct
+            domains = routing_metadata.get("domains")
+            if isinstance(domains, (list, tuple, set)):
+                for d in domains:
+                    direct = self._normalize_domain(d)
+                    if direct:
+                        return direct
+
+        query_text = "\n".join(
+            [msg.content if isinstance(msg.content, str) else "" for msg in messages]
+        )
+        if query_text and self.pre_router and hasattr(self.pre_router, "detector"):
+            try:
+                detected = self.pre_router.detector.detect(query_text)
+                domains = detected.get("metadata", {}).get("domains")
+                if isinstance(domains, set):
+                    for d in sorted(domains):
+                        direct = self._normalize_domain(d)
+                        if direct:
+                            return direct
+                if isinstance(domains, (list, tuple)):
+                    for d in domains:
+                        direct = self._normalize_domain(d)
+                        if direct:
+                            return direct
+            except Exception:
+                return None
+        return None
+
+    def _domain_policy(self, domain: Optional[str]) -> dict[str, Any]:
+        if not domain:
+            return {}
+        return dict(self.domain_policies.get(domain, {}))
+
+    def _effective_quality_threshold(self, domain: Optional[str]) -> float:
+        policy = self._domain_policy(domain)
+        override = policy.get("quality_threshold")
+        if isinstance(override, (int, float)):
+            try:
+                clamped = max(0.0, min(1.0, float(override)))
+                return clamped
+            except Exception:
+                return self.quality_threshold
+        return self.quality_threshold
+
+    def _domain_requires_direct_verifier(self, domain: Optional[str]) -> bool:
+        return bool(self._domain_policy(domain).get("direct_to_verifier"))
+
+    def _domain_forces_verifier(self, domain: Optional[str]) -> bool:
+        return bool(self._domain_policy(domain).get("force_verifier"))
+
+    def _should_accept_drafter(
+        self,
+        drafter_quality: float,
+        invoked_tool_names: list[str],
+        force_verifier_for_tool_risk: bool,
+        force_verifier_for_domain: bool,
+        quality_threshold: float,
+    ) -> bool:
+        if force_verifier_for_domain:
+            return False
+        if invoked_tool_names:
+            return not force_verifier_for_tool_risk
+        return drafter_quality >= quality_threshold
+
+    def _normalize_tool_defs(self, tools: Any) -> list[dict[str, Any]]:
+        out: list[dict[str, Any]] = []
+        if tools is None:
+            return out
+        if isinstance(tools, dict):
+            tool_list = [tools]
+        elif isinstance(tools, list):
+            tool_list = tools
+        else:
+            # Best-effort: treat as iterable of tools, otherwise single tool instance.
+            try:
+                tool_list = list(tools)
+            except TypeError:
+                tool_list = [tools]
+        for t in tool_list:
+            if isinstance(t, dict):
+                fn = t.get("function") if isinstance(t.get("function"), dict) else None
+                name = t.get("name") or (fn.get("name") if fn else None)
+                if name:
+                    description = (
+                        t.get("description") or (fn.get("description") if fn else "") or ""
+                    )
+                    out.append({"name": name, "description": description})
+                continue
+            name = getattr(t, "name", None)
+            description = getattr(t, "description", None)
+            if name:
+                out.append({"name": name, "description": description or ""})
+        return out
+
+    def _unwrap_bound_runnable(self, value: Any) -> tuple[Any, dict[str, Any]]:
+        """Unwrap RunnableBinding-like objects into (model, kwargs)."""
+        bound = getattr(value, "bound", None)
+        kwargs = getattr(value, "kwargs", None)
+        if bound is not None and isinstance(kwargs, dict):
+            return bound, dict(kwargs)
+        return value, {}
+
+    def _get_tool_def_for_name(self, name: str) -> dict[str, Any]:
+        # If we have bound tool defs, prefer their description.
+        if self._bound_tool_defs:
+            for t in self._bound_tool_defs:
+                if t.get("name") == name:
+                    return t
+        return {"name": name, "description": ""}
+
+    def _extract_tool_call_names(self, tool_calls: list[dict[str, Any]]) -> list[str]:
+        names: list[str] = []
+        for c in tool_calls or []:
+            n = c.get("name")
+            if isinstance(n, str) and n:
+                names.append(n)
+                continue
+            fn = c.get("function") or {}
+            fn_name = fn.get("name")
+            if isinstance(fn_name, str) and fn_name:
+                names.append(fn_name)
+        # Preserve order, dedupe
+        seen: set[str] = set()
+        out: list[str] = []
+        for n in names:
+            if n in seen:
+                continue
+            seen.add(n)
+            out.append(n)
+        return out
+
+    def _sanitize_tool_risk(self, routing: dict[str, Any]) -> dict[str, Any]:
+        """Ensure tool-risk routing metadata is JSON-safe for LangSmith traces."""
+        if not routing:
+            return {}
+        return {
+            "max_risk_name": routing.get("max_risk_name"),
+            "use_verifier": bool(routing.get("use_verifier")),
+            "classifications": routing.get("classifications") or {},
+            "high_risk_tools": routing.get("high_risk_tools") or [],
+        }
+
+    def _route_query_sync(self, query_text: str) -> Optional[dict[str, Any]]:
+        """Run the (async) PreRouter from sync code paths.
+
+        LangChain can call sync `_generate`/`_stream` in non-async contexts. Our
+        PreRouter API is async, so we need a bridge.
+        """
+        if not (self.enable_pre_router and self.pre_router):
+            return None
+
+        try:
+            result = self.pre_router.route(query_text)
+            if not inspect.isawaitable(result):
+                return result
+
+            # Normal sync usage: no running event loop.
+            try:
+                asyncio.get_running_loop()
+                # If a loop is already running in this thread, we can't blockingly
+                # await. Fall back to "use cascade" behavior by skipping pre-router.
+                return None
+            except RuntimeError:
+                return asyncio.run(result)
+        except Exception:
+            # Pre-router should never break generation; fall back safely.
+            return None
+
+
+# Helper function for convenience
+def with_cascade(
+    drafter: Any, verifier: Any, quality_threshold: float = 0.7, **kwargs: Any
+) -> FlowGate:
+    """Create a FlowGate wrapper (convenience function).
+
+    Args:
+        drafter: The drafter model (cheap, fast)
+        verifier: The verifier model (expensive, accurate)
+        quality_threshold: Quality threshold for accepting drafter responses
+        **kwargs: Additional FlowGate configuration
+
+    Returns:
+        FlowGate instance
+    """
+    return FlowGate(
+        drafter=drafter, verifier=verifier, quality_threshold=quality_threshold, **kwargs
+    )

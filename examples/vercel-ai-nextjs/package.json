@@ -1,0 +1,24 @@
+{
+  "name": "flowgate-vercel-ai-nextjs",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "if [ -f ../../packages/core/package.json ]; then pnpm -C ../../packages/core build && pnpm -C ../../packages/integrations/vercel-ai build; fi; next dev --webpack",
+    "build": "if [ -f ../../packages/core/package.json ]; then pnpm -C ../../packages/core build && pnpm -C ../../packages/integrations/vercel-ai build; fi; next build --webpack",
+    "start": "next start"
+  },
+  "dependencies": {
+    "@ai-sdk/react": "^3.0.0",
+    "@flowgate/core": "^1.0.0",
+    "@flowgate/vercel-ai": "^1.0.0",
+    "ai": "^6.0.0",
+    "next": "^16.1.6",
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0"
+  },
+  "devDependencies": {
+    "@types/react": "19.2.13",
+    "typescript": "5.9.3"
+  }
+}

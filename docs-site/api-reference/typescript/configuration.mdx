@@ -1,0 +1,168 @@
+---
+title: Configuration
+description: TypeScript configuration types for models, agents, quality validation, cascade behavior, runs, and presets.
+---
+
+# Configuration
+
+Full reference for `@flowgate/core` configuration types.
+
+## ModelConfig
+
+```typescript
+interface ModelConfig {
+  name: string;
+  provider: Provider;
+  cost: number;                         // Configured cost per 1,000 tokens
+  keywords?: string[];
+  domains?: string[];
+  maxTokens?: number;
+  systemPrompt?: string;
+  temperature?: number;
+  apiKey?: string;
+  baseUrl?: string;
+  extra?: Record<string, any>;
+  speedMs?: number;
+  qualityScore?: number;
+  supportsTools?: boolean;
+  toolQuality?: number;
+  qualityThreshold?: number;
+  httpConfig?: HttpConfig;
+}
+```
+
+## AgentConfig
+
+Passed to `new CascadeAgent(config)`.
+
+```typescript
+interface AgentConfig {
+  models: ModelConfig[];                    // Required, sorted by cost
+  quality?: QualityConfig;                  // Quality validation
+  cascade?: CascadeConfig;                  // Cascade behavior
+  toolExecutor?: ToolExecutor;              // Tool execution
+  callbacks?: CallbackManager;              // Lifecycle callbacks
+  domainConfigs?: DomainConfigMap;          // Per-domain routing
+  enableDomainDetection?: boolean;          // Auto-detect domain (default: true)
+  tiers?: Record<string, TierRouterConfig>; // User tier definitions
+  workflows?: Record<string, WorkflowProfile>; // Workflow profiles
+  tenantRules?: Record<string, Record<string, unknown>>; // Per-tenant overrides
+  channelModels?: Record<string, string[]>; // Channel to allowed models
+  channelFailover?: Record<string, string>; // Channel failover map
+  channelStrategies?: Record<string, string>; // Channel routing strategy map
+  ruleEngineConfig?: RuleEngineConfig;      // Rule engine config
+  ruleEngine?: RuleEngine;                  // Custom rule engine
+}
+```
+
+## QualityConfig
+
+```typescript
+interface QualityConfig {
+  threshold?: number;                  // Min confidence (default: 0.7)
+  confidenceThresholds?: {             // By complexity level
+    trivial?: number;
+    simple?: number;
+    moderate?: number;
+    hard?: number;
+    expert?: number;
+  };
+  requireMinimumTokens?: number;       // Min response length (default: 3)
+  requireValidation?: boolean;         // Enable validation (default: true)
+  useSemanticValidation?: boolean;     // ML-based validation
+  semanticThreshold?: number;          // Semantic similarity threshold
+  enableAdaptive?: boolean;            // Adaptive thresholds (default: true)
+}
+```
+
+## CascadeConfig
+
+```typescript
+interface CascadeConfig {
+  quality?: QualityConfig;             // Quality settings
+  maxBudget?: number;                  // Max budget per query (USD)
+  trackCosts?: boolean;                // Cost tracking (default: true)
+  maxRetries?: number;                 // Max retries per model (default: 2)
+  timeout?: number;                    // Timeout in seconds (default: 30)
+  routingStrategy?: 'adaptive' | 'cost_first' | 'quality_first'
+    | 'speed_first' | 'semantic';       // Routing strategy
+  useSpeculative?: boolean;            // Speculative execution (default: true)
+  verbose?: boolean;                   // Verbose logging
+  trackMetrics?: boolean;              // Performance metrics (default: true)
+}
+```
+
+## RunOptions
+
+Passed to `agent.run(input, options)`.
+
+```typescript
+interface RunOptions {
+  maxTokens?: number;                  // Max tokens to generate
+  temperature?: number;                // Temperature (0-2)
+  systemPrompt?: string;               // System prompt
+  knowledge?: string | KnowledgeSnapshot; // Request-scoped knowledge
+  tools?: Tool[];                      // Available tools
+  toolExecutor?: ToolExecutor;         // Tool executor
+  maxSteps?: number;                   // Max tool loop steps
+  extra?: Record<string, any>;         // Provider-specific options
+  forceDirect?: boolean;               // Skip cascade
+  userTier?: string;                   // User tier
+  workflow?: string;                   // Workflow profile
+  kpiFlags?: Record<string, any>;      // KPI flags
+  tenantId?: string;                   // Tenant ID
+  channel?: string;                    // Channel
+}
+```
+
+## Presets
+
+```typescript
+import {
+  PRESET_BEST_OVERALL,
+  PRESET_ULTRA_FAST,
+  PRESET_ULTRA_CHEAP,
+  PRESET_OPENAI_ONLY,
+  PRESET_ANTHROPIC_ONLY,
+  PRESET_FREE_LOCAL,
+  DEFAULT_QUALITY_CONFIG,
+  DEFAULT_CASCADE_CONFIG,
+} from '@flowgate/core';
+
+// Use a preset
+const agent = new CascadeAgent(PRESET_BEST_OVERALL);
+```
+
+| Preset | Description |
+|---|---|
+| `PRESET_BEST_OVERALL` | Claude Haiku 4.5 + GPT-4o mini |
+| `PRESET_ULTRA_FAST` | Fastest cascade pair |
+| `PRESET_ULTRA_CHEAP` | Cheapest cascade pair |
+| `PRESET_OPENAI_ONLY` | OpenAI models only |
+| `PRESET_ANTHROPIC_ONLY` | Anthropic models only |
+| `PRESET_FREE_LOCAL` | Free local models (Ollama) |
+
+## Error Classes
+
+```typescript
+import {
+  flowgateError,
+  ConfigurationError,
+  ProviderError,
+  AuthenticationError,
+  RateLimitError,
+  QualityValidationError,
+  TimeoutError,
+  ToolExecutionError,
+} from '@flowgate/core';
+
+try {
+  const result = await agent.run('Query');
+} catch (e) {
+  if (e instanceof RateLimitError) {
+    // Wait and retry
+  } else if (e instanceof QualityValidationError) {
+    // No model met the quality threshold
+  }
+}
+```

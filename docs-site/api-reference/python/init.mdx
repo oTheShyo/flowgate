@@ -1,0 +1,66 @@
+---
+title: flowgate.init()
+description: Activate the flowgate harness globally with a mode and optional configuration.
+---
+
+Activate the harness globally. All subsequent LLM calls (OpenAI, Anthropic) are automatically tracked.
+
+## Signature
+
+```python
+def init(
+    mode: HarnessMode = "off",
+    *,
+    config: Optional[HarnessConfig] = None,
+    verbose: bool = False,
+) -> HarnessInitReport
+```
+
+## Parameters
+
+| Parameter | Type | Default | Description |
+|---|---|---|---|
+| `mode` | `"off" \| "observe" \| "enforce"` | `"off"` | Harness mode |
+| `config` | `HarnessConfig \| None` | `None` | Full configuration (overrides mode) |
+| `verbose` | `bool` | `False` | Print decisions to stderr |
+
+## Returns
+
+`HarnessInitReport` — confirmation of harness activation with mode and configuration summary.
+
+## Usage
+
+### Minimal
+
+```python
+import flowgate
+flowgate.init(mode="observe")
+```
+
+### With config
+
+```python
+from flowgate import HarnessConfig
+
+config = HarnessConfig(
+    mode="enforce",
+    budget=1.00,
+    compliance="gdpr",
+    verbose=True,
+)
+flowgate.init(config=config)
+```
+
+### Environment-driven
+
+```python
+import os
+flowgate.init(mode=os.getenv("FLOWGATE_MODE", "observe"))
+```
+
+## Notes
+
+- Call `init()` once at application startup, before any LLM calls
+- Calling `init()` again replaces the previous configuration
+- Use `flowgate.reset()` to deactivate the harness
+- `init(mode="off")` is equivalent to not calling `init()` at all

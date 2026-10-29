@@ -1,0 +1,100 @@
+# FlowGate Code Owners
+# =======================
+#
+# This file defines who is responsible for reviewing code changes in specific
+# parts of the repository. Code owners are automatically requested for review
+# when someone opens a pull request that modifies code they own.
+#
+# Learn more: https://docs.github.com/en/repositories/managing-your-repositorys-settings-and-features/customizing-your-repository/about-code-owners
+
+# ============================================================================
+# GLOBAL OWNER (All files)
+# ============================================================================
+# The repository owner must approve ALL pull requests
+* @oTheShyo
+
+# ============================================================================
+# CRITICAL FILES (Extra protection for package distribution)
+# ============================================================================
+
+# Python package configuration
+/pyproject.toml @oTheShyo
+/setup.py @oTheShyo
+/setup.cfg @oTheShyo
+/requirements*.txt @oTheShyo
+/MANIFEST.in @oTheShyo
+
+# TypeScript/JavaScript package configuration
+/packages/*/package.json @oTheShyo
+/package.json @oTheShyo
+/pnpm-workspace.yaml @oTheShyo
+/pnpm-lock.yaml @oTheShyo
+/tsconfig*.json @oTheShyo
+
+# GitHub workflows, actions, and settings
+/.github/workflows/ @oTheShyo
+/.github/actions/ @oTheShyo
+/.github/CODEOWNERS @oTheShyo
+
+# Security
+/SECURITY.md @oTheShyo
+/.env.example @oTheShyo
+
+# ============================================================================
+# CORE LIBRARY CODE (Python)
+# ============================================================================
+
+# Core agent and orchestration
+/flowgate/agent.py @oTheShyo
+/flowgate/config.py @oTheShyo
+/flowgate/schema/ @oTheShyo
+
+# Provider implementations - critical for integrations
+/flowgate/providers/ @oTheShyo
+
+# Quality validation and routing systems
+/flowgate/quality/ @oTheShyo
+/flowgate/routing/ @oTheShyo
+
+# Utilities and helpers
+/flowgate/utils/ @oTheShyo
+
+# All other flowgate code
+/flowgate/ @oTheShyo
+
+# ============================================================================
+# CORE LIBRARY CODE (TypeScript)
+# ============================================================================
+/packages/core/src/ @oTheShyo
+/packages/integrations/ @oTheShyo
+/packages/ml/ @oTheShyo
+
+# ============================================================================
+# TESTS
+# ============================================================================
+/tests/ @oTheShyo
+/packages/*/tests/ @oTheShyo
+/packages/*/__tests__/ @oTheShyo
+
+# ============================================================================
+# DOCUMENTATION
+# ============================================================================
+/docs/ @oTheShyo
+/README.md @oTheShyo
+/CHANGELOG.md @oTheShyo
+/CONTRIBUTING.md @oTheShyo
+/LICENSE @oTheShyo
+
+# ============================================================================
+# EXAMPLES
+# ============================================================================
+/examples/ @oTheShyo
+/packages/*/examples/ @oTheShyo
+
+# ============================================================================
+# NOTES FOR CONTRIBUTORS
+# ============================================================================
+# - All PRs require approval from @oTheShyo (enforced by branch protection)
+# - Direct commits to main are blocked (enforced by branch protection)
+# - All changes must go through feature branches and PRs
+# - Even repository admins cannot bypass these rules (enforce_admins: true)

@@ -1,0 +1,128 @@
+---
+title: TypeScript API
+sidebarTitle: Overview
+description: TypeScript API reference for the cascade, harness, tools, integrations, and runtime utilities.
+---
+
+# TypeScript API Reference
+
+flowgate provides TypeScript packages for direct cascading, framework integration, semantic validation, and workflow automation.
+
+## Quick Start
+
+```typescript
+import { CascadeAgent } from '@flowgate/core';
+
+const agent = new CascadeAgent({
+  models: [
+    { name: 'gpt-4o-mini', provider: 'openai', cost: 0.000375 },
+    { name: 'gpt-4o', provider: 'openai', cost: 0.00625 },
+  ],
+});
+
+const result = await agent.run('Summarize this document');
+console.log(result.content);
+console.log(`Model: ${result.modelUsed}, Cost: $${result.totalCost}`);
+```
+
+## Packages
+
+| Package | Purpose | Docs |
+|---|---|---|
+| `@flowgate/core` | CascadeAgent, harness, tools, routing, quality, and telemetry | [Reference](/api-reference/typescript/core) |
+| `@flowgate/vercel-ai` | Vercel AI SDK middleware with streaming and tool loops | [Reference](/api-reference/typescript/vercel-ai) |
+| `@flowgate/langchain` | LangChain `withCascade()` wrapper and model discovery | [Reference](/api-reference/typescript/langchain) |
+| `@flowgate/ml` | Optional local semantic validation with Transformers.js | [Quality and routing](/api-reference/typescript/quality-routing) |
+| `@flowgate/n8n-nodes-flowgate` | n8n community nodes | [n8n integration](/integrations/n8n) |
+
+## Install
+
+```bash
+# Core package
+npm install @flowgate/core
+
+# Vercel AI SDK integration
+npm install @flowgate/vercel-ai
+
+# LangChain integration
+npm install @flowgate/langchain @langchain/core @langchain/openai
+
+# Optional semantic validation
+npm install @flowgate/ml @huggingface/transformers
+```
+
+## Core Concepts
+
+**Speculative execution**: The cheaper model runs first. If its response passes quality validation, flowgate returns it without calling the expensive model. Otherwise the verifier runs as fallback.
+
+**Quality validation**: Configurable confidence, alignment, response analysis, and optional semantic validation determine whether a draft is accepted.
+
+**Runtime harness**: Observe or enforce budgets, tool-call caps, latency, energy, KPI weights, and compliance around existing OpenAI and Anthropic SDK calls.
+
+**Cost tracking**: Every cascade response includes `totalCost`, with optional savings and cost breakdown fields.
+
+## Integration Patterns
+
+### Standalone Agent
+
+Use `@flowgate/core` directly for full control:
+
+```typescript
+const result = await agent.run('What is TypeScript?');
+// result.modelUsed → 'gpt-4o-mini' (if draft accepted)
+// result.savingsPercentage → 94
+```
+
+### Vercel AI SDK
+
+Use `@flowgate/vercel-ai` for Next.js and Edge deployments:
+
+```typescript
+import { createChatHandler } from '@flowgate/vercel-ai';
+
+const handler = createChatHandler(agent, {
+  protocol: 'data',
+  maxSteps: 5,
+});
+```
+
+### LangChain
+
+Use `@flowgate/langchain` for LCEL chains and pipelines:
+
+```typescript
+import { withCascade } from '@flowgate/langchain';
+
+const cascade = withCascade({
+  drafter: new ChatOpenAI({ model: 'gpt-4o-mini' }),
+  verifier: new ChatAnthropic({ model: 'claude-sonnet-4' }),
+});
+
+const chain = prompt.pipe(cascade).pipe(new StringOutputParser());
+```
+
+### Harness
+
+Use the harness around an existing SDK-based agent:
+
+```typescript
+import { init, run } from '@flowgate/core';
+
+init({ mode: 'observe' });
+
+await run({ budget: 0.50 }, async (session) => {
+  await existingAgentWork();
+  console.log(session.summary());
+});
+```
+
+## Runtime Support
+
+| Surface | Node.js | Browser | Edge runtime |
+|---|---|---|---|
+| `CascadeAgent` | Yes | Yes | Yes, with compatible providers |
+| Harness SDK instrumentation | Yes | No | No |
+| Vercel AI integration | Yes | Client hooks only | Yes |
+| LangChain integration | Yes | Depends on LangChain provider | Depends on provider |
+
+See [Feature Parity](/api-reference/typescript/feature-parity) for differences from Python.

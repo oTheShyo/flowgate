@@ -1,0 +1,335 @@
+[build-system]
+requires = ["setuptools>=61.0,<75.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "flowgate"
+version = "1.2.0"
+description = "Agent runtime intelligence layer — optimize cost, latency, quality, budget, compliance, and energy across AI agent workflows."
+readme = "README.md"
+requires-python = ">=3.9"
+license = {text = "MIT"}
+authors = [
+    {name = "flowgate maintainers", email = "hello@flowgate.dev"}
+]
+maintainers = [
+    {name = "flowgate maintainers", email = "hello@flowgate.dev"}
+]
+keywords = [
+    "ai",
+    "llm",
+    "cost-optimization",
+    "model-routing",
+    "cascade",
+    "inference",
+    "openai",
+    "anthropic",
+    "gpt",
+    "claude",
+    "machine-learning",
+    "groq",
+    "typescript",
+    "javascript",
+    "browser",
+    "edge-functions",
+    "agent-intelligence",
+    "runtime-optimization",
+    "budget-enforcement",
+    "compliance",
+    "harness",
+    "agent-runtime",
+    "kpi",
+    "energy-tracking",
+]
+classifiers = [
+    "Development Status :: 5 - Production/Stable",
+    "Intended Audience :: Developers",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "Operating System :: OS Independent",
+]
+
+dependencies = [
+    "pydantic>=2.0.0",
+    "httpx>=0.25.0",
+    "tiktoken>=0.5.0",
+]
+
+[project.scripts]
+flowgate-gateway = "flowgate.server:main"
+flowgate-mcp = "flowgate.mcp_server:main"
+
+[project.optional-dependencies]
+# Individual providers (API-based - require API keys)
+openai = ["openai>=1.0.0"]
+anthropic = ["anthropic>=0.8.0"]
+groq = ["groq>=0.4.0"]
+huggingface = ["huggingface-hub>=0.19.0"]
+together = ["together>=0.2.0"]
+
+# Local inference providers (run your own models)
+# Note: Ollama doesn't need a Python package - just HTTP requests to localhost:11434
+# Install Ollama separately from: https://ollama.ai
+vllm = [
+    "vllm>=0.14.1; python_version >= '3.10' and python_version < '3.14'"
+]  # For running vLLM in-process (or use vLLM server via HTTP)
+
+# Common API providers bundle (most popular)
+providers = [
+    "openai>=1.0.0",
+    "anthropic>=0.8.0",
+    "groq>=0.4.0",
+]
+
+# Local inference bundle
+local = [
+    "vllm>=0.14.1; python_version >= '3.10' and python_version < '3.14'",
+]
+
+# Semantic routing (optional feature)
+semantic = [
+    "sentence-transformers>=2.2.0",
+    "fastembed>=0.7.0",
+]
+
+# OpenClaw integration (auto-enables FastEmbed for semantic routing)
+openclaw = ["fastembed>=0.7.0"]
+
+# Rich terminal output (optional)
+rich = ["rich>=13.0.0"]
+
+# CrewAI harness integration (opt-in)
+crewai = ["crewai>=1.5.0; python_version >= '3.10'"]
+
+# LangChain integration (opt-in)
+langchain = ["langchain-core>=0.2.0"]
+
+# OpenAI Agents SDK integration (opt-in)
+openai-agents = [
+    "openai-agents>=0.8.4; python_version < '3.10'",
+    "openai-agents>=0.9.0; python_version >= '3.10'",
+]
+
+# Google ADK integration (opt-in, requires Python 3.10+)
+google-adk = ["google-adk>=1.0.0; python_version >= '3.10'"]
+
+# PydanticAI integration (opt-in)
+pydantic-ai = ["pydantic-ai>=0.1.0; python_version >= '3.10'"]
+
+# Model Context Protocol server integration (opt-in; v1 FastMCP API)
+mcp = ["mcp>=1.27,<2; python_version >= '3.10'"]
+
+# Development tools (includes rich for terminal output)
+dev = [
+    "pytest>=7.4.0",
+    "pytest-asyncio>=0.21.0",
+    "pytest-cov>=4.1.0",
+    "pytest-mock>=3.12.0",
+    "python-dotenv>=1.0.0",
+    "fastembed>=0.7.0",
+    "black>=23.0.0",
+    "ruff>=0.1.0",
+    "mypy>=1.5.0",
+    "isort>=5.12.0",
+    "pre-commit>=3.5.0",
+    "rich>=13.0.0",
+]
+
+# Documentation tools
+docs = [
+    "mkdocs>=1.5.0",
+    "mkdocs-material>=9.4.0",
+    "mkdocstrings[python]>=0.23.0",
+]
+
+# Everything (all providers + semantic routing)
+all = [
+    "openai>=1.0.0",
+    "anthropic>=0.8.0",
+    "groq>=0.4.0",
+    "huggingface-hub>=0.19.0",
+    "together>=0.2.0",
+    "vllm>=0.14.1; python_version >= '3.10' and python_version < '3.14'",
+    "sentence-transformers>=2.2.0",
+    "fastembed>=0.7.0",
+    "langchain-core>=0.2.0",
+]
+
+[project.urls]
+Homepage = "https://flowgate.dev"
+Documentation = "https://docs.flowgate.dev"
+Repository = "https://github.com/oTheShyo/flowgate"
+"Bug Tracker" = "https://github.com/oTheShyo/flowgate/issues"
+Changelog = "https://github.com/oTheShyo/flowgate/releases"
+
+[tool.setuptools]
+packages = {find = {where = ["."], exclude = ["tests*", "examples*", "docs*", "packages*", "node_modules*", ".venv*", "build*", "dist*"]}}
+
+[tool.setuptools.package-data]
+flowgate = ["py.typed"]
+
+[tool.black]
+line-length = 100
+target-version = ['py39']
+include = '\.pyi?$'
+exclude = '''
+/(
+    \.git
+  | \.venv
+  | \.idea
+  | node_modules
+  | \.next
+  | \.turbo
+  | build
+  | dist
+)/
+'''
+
+[tool.ruff]
+line-length = 100
+target-version = "py39"
+
+[tool.ruff.lint]
+select = [
+    "E",   # pycodestyle errors
+    "F",   # pyflakes
+    "W",   # pycodestyle warnings
+    "I",   # isort
+    "N",   # pep8-naming
+    "UP",  # pyupgrade
+    "B",   # flake8-bugbear
+    "A",   # flake8-builtins
+    "C4",  # flake8-comprehensions
+    "PT",  # flake8-pytest-style
+]
+ignore = [
+    "E501",  # Line too long - will fix gradually
+    "N801",  # Class name - flowgateLiteLLMCallback is external convention
+    "N806",  # Variable naming - external APIs use their conventions
+    "N816",  # MixedCase variable - external integrations use their conventions
+    "N818",  # Exception naming - GuardrailViolation is intentional
+    "B904",  # Exception chaining - will add gradually
+    "E722",  # Bare except - will fix gradually
+    "B007",  # Loop variable not used
+    "B008",  # Function call in defaults
+    "B017",  # assert raises
+    "B018",  # Useless expression
+    "B027",  # Empty method
+    "UP007",  # Use X | Y - not available in Python 3.9 (repo supports >=3.9)
+    "UP045", # Use X | None - requires Python 3.10+ without __future__ annotations
+    "UP035",  # typing.Dict -> dict (will migrate gradually)
+    "PT011",  # pytest.raises too broad
+    "PT017",  # Found assertion on exception
+    "PT021",  # Use yield instead of request.addfinalizer
+]
+
+[tool.ruff.lint.per-file-ignores]
+"flowgate/integrations/langchain/types.py" = ["A005"]  # Filename is part of LangChain integration surface
+"flowgate/integrations/openclaw/openai_server.py" = ["N802"]  # BaseHTTPRequestHandler uses do_GET/do_POST
+"flowgate/proxy/server.py" = ["N802"]  # BaseHTTPRequestHandler uses do_GET/do_POST
+"__init__.py" = ["F401", "E402", "I001"]  # F401: unused imports, E402: imports not at top (needed for backward compat), I001: unsorted imports
+"flowgate/core/batch.py" = ["F401"]  # Availability check imports
+"flowgate/core/cascade.py" = ["F401"]  # Availability check imports
+"flowgate/integrations/litellm.py" = ["F401"]  # Availability check imports
+"flowgate/quality/quality.py" = ["F401"]  # Availability check imports
+"flowgate/dynamic_config/watcher.py" = ["F821"]  # ConfigManager forward reference
+"flowgate/routing/tool_risk.py" = ["E741"]  # Ambiguous variable name in risk scoring
+"flowgate/schema/__init__.py" = ["A004"]  # TimeoutError re-export shadows builtin
+"flowgate/schema/domain_config.py" = ["F821"]  # ModelRegistry forward reference
+"flowgate/schema/exceptions.py" = ["A001"]  # TimeoutError class shadows builtin (intentional)
+"tests/**" = ["E402", "F401", "E741", "B023", "B006", "F841", "I001", "PT012"]  # Tests: allow flexible import grouping + complex raises blocks
+"tests/_archive_development_tests/**" = ["F"]  # Archived tests: ignore all F (pyflakes) errors
+"examples/**" = ["F401"]  # Examples: unused imports OK
+
+[tool.mypy]
+python_version = "3.9"
+warn_return_any = false
+warn_unused_configs = true
+disallow_untyped_defs = false
+check_untyped_defs = false
+ignore_errors = false
+exclude = [
+    "build",
+    "dist",
+    ".venv",
+]
+# Temporarily relaxed settings - will gradually improve type coverage
+disable_error_code = [
+    "no-untyped-def",
+    "no-any-return",
+    "assignment",
+    "arg-type",
+    "var-annotated",
+    "attr-defined",
+    "operator",
+    "index",
+    "call-overload",
+    "dict-item",
+    "return-value",
+    "valid-type",
+    "union-attr",
+    "misc",
+    "override",
+    "no-redef",
+    "has-type",
+    "annotation-unchecked",
+    "name-defined",
+    "import-not-found",
+    "call-arg",
+    "import",
+]
+
+[[tool.mypy.overrides]]
+module = [
+    "openai.*",
+    "anthropic.*",
+    "groq.*",
+    "huggingface_hub.*",
+    "together.*",
+    "vllm.*",
+]
+ignore_missing_imports = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]
+addopts = [
+    "-v",
+    "--cov=flowgate",
+    "--cov-report=term-missing",
+    "--cov-report=html",
+    "--asyncio-mode=auto",
+    "--ignore=tests/_archive_development_tests",
+]
+markers = [
+    "integration: marks tests that require external services or API keys (deselect with '-m \"not integration\"')",
+    "requires_api: marks tests that require API keys to run",
+    "requires_ollama: marks tests that require Ollama to be running",
+    "requires_vllm: marks tests that require vLLM to be running",
+    "slow: marks tests as slow (deselect with '-m \"not slow\"')",
+]
+
+[tool.coverage.run]
+source = ["flowgate"]
+omit = [
+    "*/tests/*",
+    "*/test_*.py",
+]
+
+[tool.coverage.report]
+exclude_lines = [
+    "pragma: no cover",
+    "def __repr__",
+    "raise AssertionError",
+    "raise NotImplementedError",
+    "if __name__ == .__main__.:",
+    "if TYPE_CHECKING:",
+]

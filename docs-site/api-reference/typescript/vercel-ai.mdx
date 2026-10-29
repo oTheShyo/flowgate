@@ -1,0 +1,72 @@
+---
+title: "@flowgate/vercel-ai"
+description: Vercel AI SDK middleware integration for cascade routing with streaming, multi-turn chat, and tool execution.
+---
+
+Middleware integration for the Vercel AI SDK. Adds cascade routing to AI SDK applications with streaming support.
+
+## Install
+
+```bash
+npm install @flowgate/vercel-ai
+```
+
+## createChatHandler
+
+Creates a request handler for AI SDK chat endpoints.
+
+```typescript
+import { createChatHandler } from '@flowgate/vercel-ai';
+import { CascadeAgent } from '@flowgate/core';
+
+const agent = new CascadeAgent({
+  models: [
+    { name: 'gpt-4o-mini', provider: 'openai', cost: 0.000375 },
+    { name: 'gpt-4o', provider: 'openai', cost: 0.00625 },
+  ],
+});
+
+const handler = createChatHandler(agent, {
+  protocol: 'data',
+  tools,
+  toolHandlers,
+  maxSteps: 5,
+});
+```
+
+## Options
+
+```typescript
+interface VercelAIChatHandlerOptions {
+  protocol?: 'data' | 'text';
+  stream?: boolean;
+  systemPrompt?: string;
+  maxTokens?: number;
+  temperature?: number;
+  tools?: Tool[];
+  extra?: Record<string, any>;
+  toolExecutor?: ToolExecutor;
+  toolHandlers?: Record<string, (args: Record<string, any>) => unknown | Promise<unknown>>;
+  maxSteps?: number;
+  forceDirect?: boolean;
+  userTier?: string;
+  emitCascadeEvents?: boolean;
+  requestOverrides?: {
+    enabled?: boolean;
+    secret?: string;
+    headerName?: string;
+    allowedFields?: Array<'forceDirect' | 'maxSteps' | 'userTier'>;
+  };
+}
+```
+
+## Features
+
+- AI SDK v4 `data` stream and v5/v6 UI streams
+- `useChat` multi-turn support
+- `parts` message format (AI SDK v6)
+- Tool call streaming visibility
+- Server-side tool execution loops
+- Multi-step controls
+- Cascade decision stream parts
+- Request-level overrides with allowlist

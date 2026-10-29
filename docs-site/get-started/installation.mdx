@@ -1,0 +1,113 @@
+---
+title: Installation
+description: Install flowgate with pip extras for Python or npm packages for TypeScript, including provider-specific setup.
+---
+
+## Python
+
+### Minimal install
+
+```bash
+pip install flowgate
+```
+
+Core dependencies: `pydantic>=2.0.0`, `httpx>=0.25.0`, `tiktoken>=0.5.0`, `rich>=13.0.0`.
+
+### With providers
+
+```bash
+pip install "flowgate[providers]"  # OpenAI + Anthropic + Groq
+```
+
+Individual providers:
+
+```bash
+pip install "flowgate[openai]"      # OpenAI
+pip install "flowgate[anthropic]"   # Anthropic
+pip install "flowgate[groq]"        # Groq
+pip install "flowgate[huggingface]" # Hugging Face
+pip install "flowgate[together]"    # Together AI
+```
+
+### With framework integrations
+
+```bash
+pip install "flowgate[langchain]"       # LangChain/LangGraph
+pip install "flowgate[openai-agents]"   # OpenAI Agents SDK
+pip install "flowgate[crewai]"          # CrewAI (Python 3.10+)
+pip install "flowgate[google-adk]"      # Google ADK (Python 3.10+)
+```
+
+### Local inference
+
+```bash
+pip install "flowgate[vllm]"  # vLLM (Python 3.10-3.13)
+```
+
+Ollama does not need a Python package — flowgate communicates with Ollama via HTTP at `localhost:11434`. Install Ollama separately from [ollama.ai](https://ollama.ai).
+
+### Everything
+
+```bash
+pip install "flowgate[all]"  # All providers + semantic routing
+```
+
+### Development
+
+```bash
+git clone https://github.com/oTheShyo/flowgate.git
+cd flowgate
+pip install -e ".[dev]"
+```
+
+## TypeScript
+
+### Core
+
+```bash
+npm install @flowgate/core
+```
+
+### Framework packages
+
+```bash
+npm install @flowgate/langchain                # LangChain integration
+npm install @flowgate/vercel-ai                 # Vercel AI SDK middleware
+npm install @flowgate/n8n-nodes-flowgate     # n8n community node
+```
+
+### Optional semantic validation
+
+```bash
+npm install @flowgate/ml @huggingface/transformers
+```
+
+## Provider Setup
+
+Set API keys as environment variables:
+
+```bash
+export OPENAI_API_KEY="sk-..."
+export ANTHROPIC_API_KEY="sk-ant-..."
+export GROQ_API_KEY="gsk_..."
+```
+
+flowgate auto-detects available providers based on which API keys are set.
+
+## Verify Installation
+
+```bash
+python -c "import flowgate; print(flowgate.__version__)"
+```
+
+```bash
+python -c "from flowgate import init, run, HarnessConfig, HarnessRunContext; print('OK')"
+```
+
+```bash
+node -e "const c = require('@flowgate/core'); console.log(typeof c.init, typeof c.run)"
+```
+
+## Next Step
+
+Start observing your LLM calls with zero code changes. [Quickstart: Observe Mode →](/get-started/observe)

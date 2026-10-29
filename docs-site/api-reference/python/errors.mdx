@@ -1,0 +1,59 @@
+---
+title: Errors
+description: Exception classes for budget limits, provider errors, quality validation failures, and configuration issues.
+---
+
+# Errors
+
+All flowgate exceptions inherit from `flowgateError`. Catch this base class for general error handling, or catch specific subclasses for targeted recovery.
+
+## Exception Hierarchy
+
+```
+flowgateError
+├── BudgetExceededError
+├── ConfigError
+├── ProviderError
+├── ModelError
+├── RateLimitError
+├── QualityThresholdError
+├── RoutingError
+├── ValidationError
+└── ToolExecutionError
+```
+
+## Error Classes
+
+| Exception | When Raised |
+|---|---|
+| `flowgateError` | Base class for all flowgate errors |
+| `BudgetExceededError` | Budget limit exceeded in enforce mode |
+| `ConfigError` | Invalid configuration (missing models, bad parameters) |
+| `ProviderError` | Provider API error (auth failure, server error) |
+| `ModelError` | Model loading or execution failure |
+| `RateLimitError` | Provider rate limit exceeded |
+| `QualityThresholdError` | Quality validation failed (no model met threshold) |
+| `RoutingError` | Routing decision failed (no valid model found) |
+| `ValidationError` | Input validation failed |
+| `ToolExecutionError` | Tool handler raised an exception |
+
+## Usage
+
+```python
+from flowgate.exceptions import (
+    flowgateError,
+    BudgetExceededError,
+    ProviderError,
+)
+
+try:
+    result = await agent.run("Complex query")
+except BudgetExceededError as e:
+    print(f"Budget exceeded: {e}")
+    # Handle gracefully — return cached response, notify user, etc.
+except ProviderError as e:
+    print(f"Provider error: {e}")
+    # Retry with different provider or model
+except flowgateError as e:
+    print(f"flowgate error: {e}")
+```

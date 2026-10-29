@@ -1,0 +1,108 @@
+"""FlowGate LangChain Integration.
+
+Transparent wrapper for LangChain chat models with intelligent cascade logic
+for cost optimization.
+
+Example:
+    >>> from langchain_openai import ChatOpenAI
+    >>> from flowgate.langchain import FlowGate
+    >>>
+    >>> drafter = ChatOpenAI(model='gpt-4o-mini')
+    >>> verifier = ChatOpenAI(model='gpt-4o')
+    >>>
+    >>> cascade = FlowGate(
+    ...     drafter=drafter,
+    ...     verifier=verifier,
+    ...     quality_threshold=0.7
+    ... )
+    >>>
+    >>> result = await cascade.ainvoke("What is TypeScript?")
+"""
+
+from .wrapper import FlowGate, with_cascade
+from .agent import CascadeAgent, CascadeAgentResult
+from .types import CascadeConfig, CascadeResult, CostMetadata, DomainPolicy, TokenUsage
+from .utils import (
+    calculate_quality,
+    calculate_cost,
+    calculate_savings,
+    create_cost_metadata,
+    extract_token_usage,
+    MODEL_PRICING,
+)
+
+# Model discovery utilities - optional feature
+from .models import (
+    MODEL_PRICING_REFERENCE,
+    analyze_cascade_pair,
+    suggest_cascade_pairs,
+    discover_cascade_pairs,
+    analyze_model,
+    compare_models,
+    find_best_cascade_pair,
+    validate_cascade_pair,
+    extract_model_name,
+    get_provider,
+)
+from .cost_tracking import (
+    BudgetTracker,
+    CostHistory,
+    CostEntry,
+    track_costs,
+)
+from .langchain_callbacks import (
+    FlowGateCallbackHandler,
+    get_cascade_callback,
+)
+from .harness_callback import (
+    HarnessAwareFlowGateCallbackHandler,
+    get_harness_callback,
+)
+from .harness_state import (
+    apply_langgraph_state,
+    extract_langgraph_state,
+)
+
+__all__ = [
+    # Main classes
+    "FlowGate",
+    "with_cascade",
+    "CascadeAgent",
+    "CascadeAgentResult",
+    # Types
+    "CascadeConfig",
+    "CascadeResult",
+    "CostMetadata",
+    "DomainPolicy",
+    "TokenUsage",
+    # Utilities
+    "calculate_quality",
+    "calculate_cost",
+    "calculate_savings",
+    "create_cost_metadata",
+    "extract_token_usage",
+    "MODEL_PRICING",
+    # Model discovery
+    "MODEL_PRICING_REFERENCE",
+    "analyze_cascade_pair",
+    "suggest_cascade_pairs",
+    "discover_cascade_pairs",
+    "analyze_model",
+    "compare_models",
+    "find_best_cascade_pair",
+    "validate_cascade_pair",
+    "extract_model_name",
+    "get_provider",
+    # Cost tracking (Python-specific features)
+    "BudgetTracker",
+    "CostHistory",
+    "CostEntry",
+    "track_costs",
+    # LangChain callback handlers
+    "FlowGateCallbackHandler",
+    "get_cascade_callback",
+    "HarnessAwareFlowGateCallbackHandler",
+    "get_harness_callback",
+    "extract_langgraph_state",
+    "apply_langgraph_state",
+]

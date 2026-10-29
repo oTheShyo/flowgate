@@ -1,0 +1,70 @@
+---
+title: Integrations Overview
+description: Matrix of all flowgate framework integrations with supported features, languages, and integration patterns.
+---
+
+flowgate integrates with major agent frameworks and automation runtimes, but the product direction stays the same in every case: runtime intelligence inside the agent loop, not another proxy layer outside it.
+
+All integrations are opt-in. Install the extra, enable the framework extension point, start in `observe`, then move to enforcement once you understand the live runtime behavior.
+
+## Integration Matrix
+
+| Framework | Language | Package | Integration Type | Budget Gating | Tool Gating | Traces |
+|---|---|---|---|---|---|---|
+| [LangChain](/integrations/langchain) | Python, TS | `flowgate[langchain]`, `@flowgate/langchain` | Callback handler | Yes | No | Yes |
+| [OpenAI Agents SDK](/integrations/openai-agents) | Python | `flowgate[openai-agents]` | ModelProvider | Yes | Yes | Yes |
+| [CrewAI](/integrations/crewai) | Python | `flowgate[crewai]` | llm_hooks | Yes | No | Yes |
+| [Google ADK](/integrations/google-adk) | Python | `flowgate[google-adk]` | BasePlugin | Yes | No | Yes |
+| [PydanticAI](/integrations/pydantic-ai) | Python | `flowgate[pydantic-ai]` | Cascade Model | Yes | Yes | Yes |
+| [n8n](/integrations/n8n) | TypeScript | `@flowgate/n8n-nodes-flowgate` | Community node | Yes | Yes | Yes |
+| [Vercel AI SDK](/integrations/vercel-ai) | TypeScript | `@flowgate/vercel-ai` | Middleware | Yes | No | Yes |
+| [Hermes Agent](/integrations/hermes-agent) | Python | `flowgate` | Delegation router | No | No | Yes |
+
+## Integration Patterns
+
+Each integration follows the same principle: wrap the framework's extension point with flowgate's harness, without modifying agent code.
+
+### Python
+
+```python
+import flowgate
+flowgate.init(mode="observe")
+
+# Framework-specific activation
+from flowgate.integrations.langchain import get_harness_callback
+from flowgate.integrations.openai_agents import FlowGateModelProvider
+from flowgate.integrations.crewai import enable as enable_crewai
+from flowgate.integrations.google_adk import enable as enable_adk
+from flowgate.integrations.pydantic_ai import create_cascade_model
+from flowgate.integrations.hermes import HermesDelegationRouter
+```
+
+### TypeScript
+
+```bash
+npm install @flowgate/langchain
+npm install @flowgate/vercel-ai
+npm install @flowgate/n8n-nodes-flowgate
+```
+
+## Choosing an Integration
+
+- **LangChain/LangGraph**: Use if you have existing LangChain chains or agents. The callback handler wraps any `BaseChatModel`.
+- **OpenAI Agents SDK**: Use if you're building with OpenAI's Agents SDK. The `ModelProvider` supports model candidates and tool gating.
+- **CrewAI**: Use if you're building multi-agent crews. The `llm_hooks` integration tracks all crew steps.
+- **Google ADK**: Use if you're building with Google's Agent Development Kit. The plugin integrates with `Runner`.
+- **PydanticAI**: Use if you're building with PydanticAI agents. The cascade `Model` performs drafter→verifier routing with quality gating and tool risk.
+- **n8n**: Use if you're building no-code workflows. The community node adds cascade routing to any n8n flow.
+- **Vercel AI SDK**: Use if you're building TypeScript server-side agents. The middleware wraps AI SDK streams.
+- **Hermes Agent**: Use if you need per-skill, complexity-aware, or topic-aware routing for delegated subagents while Hermes keeps provider credentials and fallback behavior.
+
+## What Stays Consistent Across Frameworks
+
+- The harness sees runtime state inside the workflow, not only the request boundary
+- Budgets, traces, and policy logic remain first-class across integrations
+- The goal is governable agent behavior, not isolated cost routing
+- GitHub examples remain the secondary deep-dive layer when implementation detail is needed
+
+## Not Sure Where to Start?
+
+See [Choose Your Integration](/get-started/choose-integration) for a decision guide based on your stack.

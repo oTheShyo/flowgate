@@ -1,0 +1,178 @@
+# @flowgate/vercel-ai
+
+Integration helpers for using **flowgate** with the **Vercel AI SDK**.
+
+This package is intentionally thin: it re-exports the Vercel AI SDK integration surface from `@flowgate/core` so you can treat it as an explicit integration dependency.
+
+## What It Supports
+
+- AI SDK v4 `data` stream protocol and AI SDK v5/v6 UI message streams.
+- `useChat` multi-turn message lists.
+- Incoming UI messages with `parts` (AI SDK v6 format) and classic `content` strings.
+- Tool call stream events (`tool_call_delta`, `tool-input-*`) for better debugging and UI rendering.
+- Server-side tool execution loops via `toolExecutor` or `toolHandlers`.
+- Multi-step loop controls: `maxSteps`, `forceDirect`.
+- Optional cascade decision stream parts (`routing`, `draft-decision`, `switch`, `summary`).
+- Optional request-level overrides (`forceDirect`, `maxSteps`, `userTier`) with allowlist + shared-secret guard.
+
+## Feature Matrix
+
+| Capability | Vercel AI Integration | LangChain Integration | Core CascadeAgent |
+|---|---|---|---|
+| Trivial + multi-turn messages | ✅ | ✅ | ✅ |
+| AI SDK `parts` message support | ✅ | N/A | N/A |
+| Data/UI streaming protocols | ✅ | ✅ (LangChain streaming) | ✅ |
+| Tool call streaming visibility | ✅ | ✅ | ✅ |
+| Server-side tool execution loop | ✅ (`toolExecutor` / `toolHandlers`) | ✅ (`bindTools` + runtime tools) | ✅ (`toolExecutor`) |
+| Multi-tool loop/message-list continuation | ✅ | ✅ | ✅ |
+| Cascade decision stream parts | ✅ | ⚠️ framework-specific | ✅ |
+| Safe request-level routing overrides | ✅ | ⚠️ app-level only | ✅ |
+| Domain-aware cascading (configured on agent) | ✅ | ✅ | ✅ |
+| Draft/verifier cascade | ✅ | ✅ | ✅ |
+| Per-run observability metadata in framework traces | ⚠️ partial (via agent callbacks) | ✅ LangSmith-first | ⚠️ callback-driven |
+| LangGraph/LCEL-native composition | ❌ (not relevant) | ✅ | ❌ (framework-agnostic core) |
+
+## Gaps vs LangChain/Core (and what to integrate next)
+
+These are the highest-value additions that make sense for Vercel AI SDK:
+
+1. First-class structured output helpers  
+Add Vercel-focused helpers for object generation patterns (AI SDK object workflows) with cascade metadata attached.
+
+2. Turn-key telemetry adapters  
+Provide built-in hooks for common observability stacks (OpenTelemetry/Langfuse/etc.) without custom callback plumbing.
+
+## Install
+
+```bash
+pnpm add @flowgate/core @flowgate/vercel-ai ai @ai-sdk/react
+```
+
+## Next.js `useChat` drop-in backend (App Router)
+
+```ts
+// app/api/chat/route.ts
+import { CascadeAgent } from '@flowgate/core';
+import { createChatHandler } from '@flowgate/vercel-ai';
+
+export const runtime = 'edge';
+
+const agent = new CascadeAgent({
+  models: [
+    { name: 'gpt-4o-mini', provider: 'openai', cost: 0.00015, apiKey: process.env.OPENAI_API_KEY },
+    { name: 'gpt-4o', provider: 'openai', cost: 0.00625, apiKey: process.env.OPENAI_API_KEY },
+  ],
+});
+
+const handler = createChatHandler(agent);
+
+export async function POST(req: Request) {
+  return handler(req);
+}
+```
+
+Deployment note: if the target Vercel project has deployment protection (`ssoProtection`) enabled, direct `/api/chat` probes can return `401`. Disable protection (or allow unauthenticated access) for sandbox E2E checks.
+
+## Tool Loop Example (Single Tool -> Multi Tool Progression)
+
+```ts
+import { CascadeAgent } from '@flowgate/core';
+import { createChatHandler } from '@flowgate/vercel-ai';
+
+const agent = new CascadeAgent({
+  models: [
+    { name: 'gpt-4o-mini', provider: 'openai', cost: 0.00015, apiKey: process.env.OPENAI_API_KEY },
+    { name: 'gpt-4o', provider: 'openai', cost: 0.00625, apiKey: process.env.OPENAI_API_KEY },
+  ],
+});
+
+const tools = [
+  {
+    type: 'function' as const,
+    function: {
+      name: 'get_weather',
+      description: 'Get weather for a city',
+      parameters: {
+        type: 'object',
+        properties: { location: { type: 'string' } },
+        required: ['location'],
+      },
+    },
+  },
+];
+
+export const POST = createChatHandler(agent, {
+  protocol: 'data',
+  tools,
+  // Use one of:
+  // 1) Provide a full ToolExecutor
+  // toolExecutor: new ToolExecutor([...]),
+  // 2) Or use simple handler mapping:
+  toolHandlers: {
+    async get_weather(args) {
+      return { location: String(args.location ?? 'unknown'), weather: 'sunny' };
+    },
+  },
+  maxSteps: 5,
+  forceDirect: true, // useful for deterministic tool-loop behavior
+});
+```
+
+## Handler Options
+
+- `protocol`: `'data' | 'text'`
+- `stream`: disable streaming and return JSON when `false`
+- `systemPrompt`, `maxTokens`, `temperature`
+- `tools`, `extra`
+- `toolExecutor`: use core `ToolExecutor` for server-side tool loops
+- `toolHandlers`: lightweight mapping alternative to `toolExecutor`
+- `maxSteps`: max loop turns for tool execution
+- `forceDirect`: skip cascade and run direct path
+- `userTier`: reserved for tier-aware routing flows
+- `emitCascadeEvents`: include cascade routing/decision stream parts (`true` by default)
+- `requestOverrides`: allow request-level overrides from `body.flowgate.overrides`
+  - `enabled`, `allowedFields` (`forceDirect|maxSteps|userTier`)
+  - optional `secret` + `headerName` (default `x-flowgate-override-key`)
+
+## Request Payload Compatibility
+
+`createChatHandler(...)` accepts the same multi-turn `messages` list shape developers send from `useChat`:
+
+Classic content messages:
+
+```json
+{
+  "messages": [
+    { "role": "user", "content": "Summarize the latest release notes." },
+    { "role": "assistant", "content": "Sure, share the notes." }
+  ]
+}
+```
+
+AI SDK `parts` messages:
+
+```json
+{
+  "messages": [
+    {
+      "role": "user",
+      "parts": [
+        { "type": "text", "text": "Plan a deployment checklist." }
+      ]
+    }
+  ]
+}
+```
+
+Note: when tool execution loop is enabled, responses are buffered per loop step for deterministic semantics. The integration now runs loop continuation across iterative cascade turns (not only single-pass direct runs), so drafter/verifier routing remains active during tool loops.
+
+Real deployed smoke check:
+
+```bash
+DEPLOY_URL="https://<your-deployment>.vercel.app"
+curl -sS -X POST "$DEPLOY_URL/api/chat" \
+  -H "content-type: application/json" \
+  --data '{"messages":[{"role":"user","content":"Reply with: flowgate-ok"}]}'
+```
+
+See `examples/vercel-ai-nextjs/` for a complete runnable example.

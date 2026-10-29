@@ -1,0 +1,222 @@
+{
+  "$schema": "https://mintlify.com/docs.json",
+  "theme": "palm",
+  "name": "flowgate",
+  "colors": {
+    "primary": "#0E7490",
+    "light": "#22D3EE",
+    "dark": "#0E7490"
+  },
+  "logo": {
+    "light": "/logo/flowgate-light.svg",
+    "dark": "/logo/flowgate-dark.svg",
+    "href": "https://flowgate.dev"
+  },
+  "favicon": "/favicon.svg",
+  "contextual": {
+    "options": ["copy", "view", "chatgpt", "claude", "cursor", "vscode"]
+  },
+  "navigation": {
+    "global": {
+      "anchors": [
+        {
+          "anchor": "Website",
+          "icon": "globe",
+          "href": "https://flowgate.dev"
+        },
+        {
+          "anchor": "GitHub",
+          "icon": "github",
+          "href": "https://github.com/oTheShyo/flowgate"
+        }
+      ]
+    },
+    "tabs": [
+      {
+        "tab": "Documentation",
+        "icon": "book-open",
+        "groups": [
+          {
+            "group": "Overview",
+            "pages": [
+              "index",
+              "why-flowgate"
+            ]
+          },
+          {
+            "group": "Getting Started",
+            "pages": [
+              "get-started/installation",
+              "get-started/observe",
+              "get-started/enforce",
+              "get-started/agent-decorator",
+              "get-started/agent-harness",
+              "get-started/agent-loop",
+              "get-started/rollout-guide",
+              "get-started/choose-integration"
+            ]
+          },
+          {
+            "group": "Core Concepts",
+            "pages": [
+              "get-started/how-it-works",
+              "capabilities/overview"
+            ]
+          },
+          {
+            "group": "Harness",
+            "pages": [
+              "harness/overview",
+              "harness/modes",
+              "harness/budget-enforcement",
+              "harness/compliance",
+              "harness/kpi-optimization",
+              "harness/energy-tracking",
+              "harness/decision-trace",
+              "harness/actions"
+            ]
+          },
+          {
+            "group": "Integrations",
+            "pages": [
+              "integrations/overview",
+              "integrations/langchain",
+              "integrations/openai-agents",
+              "integrations/crewai",
+              "integrations/google-adk",
+              "integrations/pydantic-ai",
+              "integrations/vercel-ai",
+              "integrations/n8n",
+              "integrations/openclaw",
+              "integrations/hermes-agent"
+            ]
+          },
+          {
+            "group": "Guides",
+            "pages": [
+              "developers/providers-and-presets",
+              "developers/tools-and-streaming",
+              "developers/production-and-deployment",
+              "developers/enterprise-networking",
+              "developers/customization",
+              "developers/observability-and-privacy"
+            ]
+          },
+          {
+            "group": "Resources",
+            "pages": [
+              "for-coding-agents",
+              "changelog",
+              "contributing"
+            ]
+          }
+        ]
+      },
+      {
+        "tab": "API Reference",
+        "icon": "code",
+        "groups": [
+          {
+            "group": "Python",
+            "pages": [
+              "api-reference/python/overview",
+              "api-reference/python/init",
+              "api-reference/python/run",
+              "api-reference/python/agent-decorator",
+              "api-reference/python/cascade-agent",
+              "api-reference/python/model-config",
+              "api-reference/python/cascade-result",
+              "api-reference/python/harness-config",
+              "api-reference/python/run-context",
+              "api-reference/python/tools",
+              "api-reference/python/streaming",
+              "api-reference/python/presets",
+              "api-reference/python/errors",
+              "api-reference/python/environment"
+            ]
+          },
+          {
+            "group": "TypeScript",
+            "pages": [
+              "api-reference/typescript/overview",
+              "api-reference/typescript/core",
+              "api-reference/typescript/harness",
+              "api-reference/typescript/cascade-agent",
+              "api-reference/typescript/configuration",
+              "api-reference/typescript/result",
+              "api-reference/typescript/providers",
+              "api-reference/typescript/tools",
+              "api-reference/typescript/quality-routing",
+              "api-reference/typescript/streaming",
+              "api-reference/typescript/vercel-ai",
+              "api-reference/typescript/langchain",
+              "api-reference/typescript/feature-parity"
+            ]
+          }
+        ]
+      },
+      {
+        "tab": "Examples",
+        "icon": "flask",
+        "groups": [
+          {
+            "group": "Examples",
+            "pages": [
+              "examples/catalog",
+              "examples/basic-usage",
+              "examples/budget-enforcement",
+              "examples/compliance-gating",
+              "examples/kpi-weighted-routing",
+              "examples/multi-agent",
+              "examples/enterprise-patterns"
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "navbar": {
+    "links": [
+      {
+        "label": "Home",
+        "href": "https://flowgate.dev"
+      },
+      {
+        "label": "PyPI",
+        "href": "https://pypi.org/project/flowgate/"
+      },
+      {
+        "label": "npm",
+        "href": "https://www.npmjs.com/package/@flowgate/core"
+      }
+    ],
+    "primary": {
+      "type": "github",
+      "href": "https://github.com/oTheShyo/flowgate"
+    }
+  },
+  "footer": {
+    "socials": {
+      "website": "https://flowgate.dev",
+      "github": "https://github.com/oTheShyo/flowgate",
+      "linkedin": "https://github.com/oTheShyo"
+    },
+    "links": [
+      {
+        "header": "Packages",
+        "items": [
+          { "label": "PyPI", "href": "https://pypi.org/project/flowgate/" },
+          { "label": "npm", "href": "https://www.npmjs.com/package/@flowgate/core" }
+        ]
+      },
+      {
+        "header": "Resources",
+        "items": [
+          { "label": "Changelog", "href": "/changelog" },
+          { "label": "Contributing", "href": "/contributing" },
+          { "label": "For Coding Agents", "href": "/for-coding-agents" }
+        ]
+      }
+    ]
+  }
+}

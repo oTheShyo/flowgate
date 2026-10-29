@@ -1,0 +1,608 @@
+/**
+ * Anthropic Claude provider implementation with automatic environment detection
+ *
+ * Works in both Node.js (using Anthropic SDK) and browser (using fetch API).
+ * Automatically detects the runtime environment and uses the appropriate method.
+ *
+ * Supports: Claude 4.5, Claude 4, Claude 3.5, Claude 3
+ *
+ * Note: Anthropic does not support logprobs natively
+ */
+
+import { BaseProvider, type ProviderRequest, getHttpAgentOptions } from './base';
+import type { ProviderResponse, Tool, Message, ReasoningModelInfo, UsageDetails } from '../types';
+import type { ModelConfig } from '../config';
+import type { StreamChunk } from '../streaming';
+
+// Conditional import for Node.js environment
+let Anthropic: any;
+try {
+  // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition
+  if (typeof (globalThis as any).window === 'undefined') {
+    Anthropic = require('@anthropic-ai/sdk').default;
+  }
+} catch {
+  Anthropic = null;
+}
+
+/**
+ * Anthropic pricing per 1M tokens (August 2026)
+ * Source: https://platform.claude.com/docs/en/about-claude/pricing
+ *
+ * Format: Input/output USD per million tokens.
+ */
+const ANTHROPIC_PRICING: Record<string, { input: number; output: number }> = {
+  // Claude 5 Series
+  'claude-fable-5': { input: 10.0, output: 50.0 },
+  'claude-mythos-5': { input: 10.0, output: 50.0 },
+  'claude-opus-5': { input: 5.0, output: 25.0 },
+  // Introductory price through 2026-08-31; invoices remain authoritative.
+  'claude-sonnet-5': { input: 2.0, output: 10.0 },
+
+  // Claude 4 Series
+  'claude-opus-4-8': { input: 5.0, output: 25.0 },
+  'claude-opus-4-7': { input: 5.0, output: 25.0 },
+  'claude-opus-4-6': { input: 5.0, output: 25.0 },
+  'claude-opus-4-5': { input: 5.0, output: 25.0 },
+  'claude-opus-4.1': { input: 15.0, output: 75.0 },
+  'claude-opus-4': { input: 15.0, output: 75.0 },
+  'claude-sonnet-4-6': { input: 3.0, output: 15.0 },
+  'claude-sonnet-4-5': { input: 3.0, output: 15.0 },
+  'claude-sonnet-4.5': { input: 3.0, output: 15.0 },
+  'claude-sonnet-4': { input: 3.0, output: 15.0 },
+  'claude-haiku-4-5': { input: 1.0, output: 5.0 },
+  'claude-haiku-4.5': { input: 1.0, output: 5.0 },
+
+  // Claude 3.5 Series
+  'claude-3-7-sonnet': { input: 3.0, output: 15.0 },
+  'claude-3-5-sonnet': { input: 3.0, output: 15.0 },
+  'claude-sonnet-3-5': { input: 3.0, output: 15.0 },
+  'claude-3-5-haiku': { input: 0.8, output: 4.0 },
+  'claude-haiku-3-5': { input: 0.8, output: 4.0 },
+
+  // Claude 3 Series
+  'claude-3-opus': { input: 15.0, output: 75.0 },
+  'claude-3-sonnet': { input: 3.0, output: 15.0 },
+  'claude-3-haiku': { input: 0.25, output: 1.25 },
+};
+
+/**
+ * Detect if model supports extended thinking and get its capabilities
+ *
+ * Claude 4.5 models (Sonnet 4.5, Haiku 4.5) support extended thinking mode,
+ * which allows visible "thinking" blocks showing step-by-step reasoning.
+ * Released September 29, 2025.
+ *
+ * @param modelName - Model name to check
+ * @returns Model capabilities
+ */
+export function getReasoningModelInfo(modelName: string): ReasoningModelInfo {
+  const name = modelName.toLowerCase();
+
+  // Claude 4.5 models with extended thinking support
+  // Includes: claude-sonnet-4.5, claude-haiku-4.5, claude-4.5-sonnet, etc.
+  if (name.includes('4.5') || name.includes('4-5')) {
+    return {
+      isReasoning: true,
+      provider: 'anthropic',
+      supportsStreaming: true,
+      supportsTools: true,
+      supportsSystemMessages: true,
+      supportsExtendedThinking: true,
+      requiresThinkingBudget: true,
+    };
+  }
+
+  // All other Claude models (standard capabilities without extended thinking)
+  return {
+    isReasoning: false,
+    provider: 'anthropic',
+    supportsStreaming: true,
+    supportsTools: true,
+    supportsSystemMessages: true,
+    supportsExtendedThinking: false,
+    requiresThinkingBudget: false,
+  };
+}
+
+/**
+ * Anthropic provider with automatic environment detection
+ *
+ * Automatically uses:
+ * - Anthropic SDK in Node.js
+ * - Fetch API in browser
+ */
+export class AnthropicProvider extends BaseProvider {
+  readonly name = 'anthropic';
+  private client: any = null;
+  private useSDK: boolean;
+  private baseUrl: string;
+
+  constructor(config: ModelConfig) {
+    super(config);
+
+    // Detect environment and initialize accordingly
+    // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition
+    this.useSDK = typeof (globalThis as any).window === 'undefined' && Anthropic !== null;
+    this.baseUrl = config.baseUrl || 'https://api.anthropic.com/v1';
+
+    if (this.useSDK) {
+      // Node.js: Use SDK with enterprise HTTP config
+      const httpOptions = getHttpAgentOptions(config.httpConfig);
+      this.client = new Anthropic({
+        apiKey: this.getApiKey(),
+        ...httpOptions,
+      });
+    }
+    // Browser: Will use fetch in generate()
+  }
+
+  async generate(request: ProviderRequest): Promise<ProviderResponse> {
+    if (this.useSDK) {
+      return this.generateWithSDK(request);
+    } else {
+      return this.generateWithFetch(request);
+    }
+  }
+
+  /**
+   * Stream a completion
+   */
+  async *stream(request: ProviderRequest): AsyncIterable<StreamChunk> {
+    if (this.useSDK) {
+      yield* this.streamWithSDK(request);
+    } else {
+      yield* this.streamWithFetch(request);
+    }
+  }
+
+  /**
+   * Stream using Anthropic SDK (Node.js)
+   */
+  private async *streamWithSDK(request: ProviderRequest): AsyncIterable<StreamChunk> {
+    try {
+      const messages = this.normalizeMessages(request.messages);
+      const anthropicMessages = this.convertToAnthropicMessages(messages);
+      const tools = request.tools ? this.convertTools(request.tools) : undefined;
+
+      const stream = await this.client.messages.stream({
+        model: request.model || this.config.name,
+        max_tokens: request.maxTokens || this.config.maxTokens || 1000,
+        temperature: request.temperature ?? this.config.temperature ?? 0.7,
+        messages: anthropicMessages,
+        system: request.systemPrompt,
+        tools,
+        ...request.extra,
+      });
+
+      for await (const event of stream) {
+        if (event.type === 'content_block_delta' && event.delta.type === 'text_delta') {
+          yield {
+            content: event.delta.text,
+            done: false,
+            raw: event,
+          };
+        } else if (event.type === 'message_stop') {
+          yield {
+            content: '',
+            done: true,
+            finish_reason: 'stop',
+            raw: event,
+          };
+        }
+      }
+    } catch (error) {
+      throw this.formatError(error);
+    }
+  }
+
+  /**
+   * Stream using fetch API (Browser) with SSE parsing
+   */
+  private async *streamWithFetch(request: ProviderRequest): AsyncIterable<StreamChunk> {
+    try {
+      const messages = this.normalizeMessages(request.messages);
+      const anthropicMessages = this.convertToAnthropicMessages(messages);
+      const tools = request.tools ? this.convertTools(request.tools) : undefined;
+
+      const body: any = {
+        model: request.model || this.config.name,
+        max_tokens: request.maxTokens || this.config.maxTokens || 1000,
+        messages: anthropicMessages,
+        stream: true,
+        ...request.extra,
+      };
+
+      if (request.systemPrompt) {
+        body.system = request.systemPrompt;
+      }
+
+      if (request.temperature !== undefined) {
+        body.temperature = request.temperature;
+      } else if (this.config.temperature !== undefined) {
+        body.temperature = this.config.temperature;
+      } else {
+        body.temperature = 0.7;
+      }
+
+      if (tools) {
+        body.tools = tools;
+      }
+
+      const response = await fetch(`${this.baseUrl}/messages`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-api-key': this.getApiKey(),
+          'anthropic-version': '2023-06-01',
+        },
+        body: JSON.stringify(body),
+      });
+
+      if (!response.ok) {
+        throw new Error(`Anthropic API error: ${response.status} ${response.statusText}`);
+      }
+
+      if (!response.body) {
+        throw new Error('Response body is null');
+      }
+
+      // Parse SSE stream
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = '';
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split('\n');
+        buffer = lines.pop() || '';
+
+        for (const line of lines) {
+          if (!line.trim() || line.startsWith(':')) continue;
+
+          if (line.startsWith('event: ') || line.startsWith('data: ')) {
+            const isEvent = line.startsWith('event: ');
+            const data = line.slice(isEvent ? 7 : 6);
+
+            if (!isEvent) {
+              try {
+                const parsed = JSON.parse(data);
+
+                // Handle content delta events
+                if (parsed.type === 'content_block_delta' && parsed.delta?.type === 'text_delta') {
+                  yield {
+                    content: parsed.delta.text,
+                    done: false,
+                    raw: parsed,
+                  };
+                } else if (parsed.type === 'message_stop') {
+                  yield {
+                    content: '',
+                    done: true,
+                    finish_reason: 'stop',
+                    raw: parsed,
+                  };
+                  return;
+                }
+              } catch (e) {
+                // Skip invalid JSON
+                continue;
+              }
+            }
+          }
+        }
+      }
+    } catch (error) {
+      throw this.formatError(error);
+    }
+  }
+
+  /**
+   * Generate using Anthropic SDK (Node.js)
+   */
+  private async generateWithSDK(request: ProviderRequest): Promise<ProviderResponse> {
+    try {
+      const messages = this.normalizeMessages(request.messages);
+      const anthropicMessages = this.convertToAnthropicMessages(messages);
+      const tools = request.tools ? this.convertTools(request.tools) : undefined;
+
+      // Auto-detect extended thinking support
+      const modelName = request.model || this.config.name;
+      const modelInfo = getReasoningModelInfo(modelName);
+
+      // Build request payload
+      const payload: any = {
+        model: modelName,
+        max_tokens: request.maxTokens || this.config.maxTokens || 1000,
+        temperature: request.temperature ?? this.config.temperature ?? 0.7,
+        messages: anthropicMessages,
+        system: request.systemPrompt,
+        tools,
+        ...request.extra,
+      };
+
+      // Add extended thinking configuration for Claude 4.5
+      if (modelInfo.supportsExtendedThinking && request.extra?.thinking) {
+        payload.thinking = request.extra.thinking;
+      }
+
+      const completion = await this.client.messages.create(payload);
+
+      // Extract thinking content (Claude 4.5 extended thinking)
+      const thinkingBlocks = completion.content
+        .filter((block: any) => block.type === 'thinking')
+        .map((block: any) => ({
+          type: 'thinking' as const,
+          thinking: block.thinking,
+          signature: block.signature,
+        }));
+
+      const thinking = thinkingBlocks.length > 0
+        ? thinkingBlocks.map((b: any) => b.thinking).join('\n\n')
+        : undefined;
+
+      // Extract text content
+      const textContent = completion.content
+        .filter((block: any) => block.type === 'text')
+        .map((block: any) => block.text)
+        .join('');
+
+      // Extract tool calls
+      const toolCalls = completion.content
+        .filter((block: any) => block.type === 'tool_use')
+        .map((block: any) => ({
+          id: block.id,
+          type: 'function' as const,
+          function: {
+            name: block.name,
+            arguments: JSON.stringify(block.input),
+          },
+        }));
+
+      return {
+        content: textContent,
+        model: completion.model,
+        usage: {
+          prompt_tokens: completion.usage.input_tokens,
+          completion_tokens: completion.usage.output_tokens,
+          total_tokens: completion.usage.input_tokens + completion.usage.output_tokens,
+          cached_input_tokens: completion.usage.cache_read_input_tokens,
+          cache_write_input_tokens: completion.usage.cache_creation_input_tokens,
+          cache_write_5m_input_tokens:
+            (completion.usage as any).cache_creation?.ephemeral_5m_input_tokens,
+          cache_write_1h_input_tokens:
+            (completion.usage as any).cache_creation?.ephemeral_1h_input_tokens,
+        },
+        finish_reason: completion.stop_reason || undefined,
+        tool_calls: toolCalls.length > 0 ? toolCalls : undefined,
+        thinking,
+        content_blocks: completion.content,
+        raw: completion,
+      };
+    } catch (error) {
+      throw this.formatError(error);
+    }
+  }
+
+  /**
+   * Generate using fetch API (Browser)
+   */
+  private async generateWithFetch(request: ProviderRequest): Promise<ProviderResponse> {
+    try {
+      const messages = this.normalizeMessages(request.messages);
+      const anthropicMessages = this.convertToAnthropicMessages(messages);
+      const tools = request.tools ? this.convertTools(request.tools) : undefined;
+
+      const body: any = {
+        model: request.model || this.config.name,
+        max_tokens: request.maxTokens || this.config.maxTokens || 1000,
+        messages: anthropicMessages,
+        ...request.extra,
+      };
+
+      if (request.systemPrompt) {
+        body.system = request.systemPrompt;
+      }
+
+      if (request.temperature !== undefined) {
+        body.temperature = request.temperature;
+      } else if (this.config.temperature !== undefined) {
+        body.temperature = this.config.temperature;
+      } else {
+        body.temperature = 0.7;
+      }
+
+      if (tools) {
+        body.tools = tools;
+      }
+
+      const response = await fetch(`${this.baseUrl}/messages`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-api-key': this.getApiKey(),
+          'anthropic-version': '2023-06-01',
+        },
+        body: JSON.stringify(body),
+      });
+
+      if (!response.ok) {
+        throw new Error(`Anthropic API error: ${response.status} ${response.statusText}`);
+      }
+
+      const completion: any = await response.json();
+
+      // Extract text content
+      const textContent = completion.content
+        .filter((block: any) => block.type === 'text')
+        .map((block: any) => block.text)
+        .join('');
+
+      // Extract tool calls
+      const toolCalls = completion.content
+        .filter((block: any) => block.type === 'tool_use')
+        .map((block: any) => ({
+          id: block.id,
+          type: 'function' as const,
+          function: {
+            name: block.name,
+            arguments: JSON.stringify(block.input),
+          },
+        }));
+
+      return {
+        content: textContent,
+        model: completion.model,
+        usage: {
+          prompt_tokens: completion.usage.input_tokens,
+          completion_tokens: completion.usage.output_tokens,
+          total_tokens: completion.usage.input_tokens + completion.usage.output_tokens,
+          cached_input_tokens: completion.usage.cache_read_input_tokens,
+          cache_write_input_tokens: completion.usage.cache_creation_input_tokens,
+          cache_write_5m_input_tokens:
+            completion.usage.cache_creation?.ephemeral_5m_input_tokens,
+          cache_write_1h_input_tokens:
+            completion.usage.cache_creation?.ephemeral_1h_input_tokens,
+        },
+        finish_reason: completion.stop_reason || undefined,
+        tool_calls: toolCalls.length > 0 ? toolCalls : undefined,
+        raw: completion,
+      };
+    } catch (error) {
+      throw this.formatError(error);
+    }
+  }
+
+  calculateCost(promptTokens: number, completionTokens: number, model: string): number {
+    const pricing = this.getModelPricing(model);
+    return (promptTokens * pricing.input + completionTokens * pricing.output) / 1_000_000;
+  }
+
+  calculateCostFromUsage(usage: UsageDetails, model: string): number {
+    const pricing = this.getModelPricing(model);
+    const promptTokens = Math.max(usage.prompt_tokens ?? usage.input_tokens ?? 0, 0);
+    const completionTokens = Math.max(
+      usage.completion_tokens ?? usage.output_tokens ?? 0,
+      0
+    );
+    const readTokens = Math.max(usage.cached_input_tokens ?? 0, 0);
+    const writeTokens = Math.max(usage.cache_write_input_tokens ?? 0, 0);
+    const write5m = Math.min(Math.max(usage.cache_write_5m_input_tokens ?? 0, 0), writeTokens);
+    const write1h = Math.min(
+      Math.max(usage.cache_write_1h_input_tokens ?? 0, 0),
+      Math.max(writeTokens - write5m, 0)
+    );
+
+    if (readTokens === 0 && writeTokens === 0) {
+      return this.calculateCost(promptTokens, completionTokens, model);
+    }
+
+    const unclassifiedWrites = Math.max(writeTokens - write5m - write1h, 0);
+    const billedInputTokens =
+      promptTokens +
+      readTokens * 0.1 +
+      write5m * 1.25 +
+      write1h * 2.0 +
+      unclassifiedWrites * 1.25;
+    return (billedInputTokens * pricing.input + completionTokens * pricing.output) / 1_000_000;
+  }
+
+  private getModelPricing(model: string): { input: number; output: number } {
+    const modelLower = model.toLowerCase().split('/').pop() ?? model.toLowerCase();
+    let longestMatch = '';
+    let pricing: { input: number; output: number } | undefined;
+    for (const [prefix, value] of Object.entries(ANTHROPIC_PRICING)) {
+      if (modelLower.startsWith(prefix) && prefix.length > longestMatch.length) {
+        longestMatch = prefix;
+        pricing = value;
+      }
+    }
+    return pricing ?? { input: 3.0, output: 15.0 };
+  }
+
+  /**
+   * Convert generic messages to Anthropic format
+   */
+  private convertToAnthropicMessages(messages: Message[]): any[] {
+    const anthropicMessages: any[] = [];
+
+    for (const msg of messages) {
+      // Skip system messages (handled separately in systemPrompt)
+      if (msg.role === 'system') {
+        continue;
+      }
+
+      if (msg.role === 'user') {
+        anthropicMessages.push({
+          role: 'user',
+          content: msg.content,
+        });
+      } else if (msg.role === 'assistant') {
+        if (msg.tool_calls && msg.tool_calls.length > 0) {
+          const blocks: any[] = [];
+
+          if (msg.content && msg.content.trim().length > 0) {
+            blocks.push({ type: 'text', text: msg.content });
+          }
+
+          for (const tc of msg.tool_calls) {
+            let input: any = {};
+            try {
+              input =
+                typeof tc.function?.arguments === 'string'
+                  ? JSON.parse(tc.function.arguments)
+                  : tc.function?.arguments ?? {};
+            } catch {
+              input = {};
+            }
+
+            blocks.push({
+              type: 'tool_use',
+              id: tc.id,
+              name: tc.function?.name,
+              input,
+            });
+          }
+
+          anthropicMessages.push({
+            role: 'assistant',
+            content: blocks,
+          });
+        } else {
+          anthropicMessages.push({
+            role: 'assistant',
+            content: msg.content,
+          });
+        }
+      } else if (msg.role === 'tool') {
+        // Anthropic format for tool results
+        anthropicMessages.push({
+          role: 'user',
+          content: [
+            {
+              type: 'tool_result',
+              tool_use_id: msg.tool_call_id || '',
+              content: msg.content,
+            },
+          ],
+        });
+      }
+    }
+
+    return anthropicMessages;
+  }
+
+  /**
+   * Convert generic tools to Anthropic format
+   */
+  private convertTools(tools: Tool[]): any[] {
+    return tools.map((tool) => ({
+      name: tool.function.name,
+      description: tool.function.description,
+      input_schema: tool.function.parameters,
+    }));
+  }
+}

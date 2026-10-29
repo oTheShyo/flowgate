@@ -1,0 +1,162 @@
+---
+title: "Quickstart: Agent Decorator"
+description: Attach budget, compliance, and KPI policy metadata directly to agent functions.
+---
+
+# Agent Policy Metadata
+
+The Python `@flowgate.agent()` decorator and TypeScript `harnessAgent()` wrapper attach policy metadata directly to a function. They do not create a scoped run or enforce the metadata by themselves.
+
+<Warning>
+Use `run()` around agent execution when budget, compliance, or other controls must be enforced.
+</Warning>
+
+## Basic Usage
+
+<CodeGroup>
+
+```python Python
+import flowgate
+
+flowgate.init(mode="enforce")
+
+@flowgate.agent(budget=0.20)
+async def my_agent(query: str):
+    """This agent cannot spend more than $0.20."""
+    return await llm.complete(query)
+```
+
+```typescript TypeScript
+import { harnessAgent, init } from '@flowgate/core';
+
+init({ mode: 'enforce' });
+
+const myAgent = harnessAgent({ budget: 0.20 })(
+  async (query: string) => llm.complete(query),
+);
+```
+
+</CodeGroup>
+
+## Add Compliance
+
+<CodeGroup>
+
+```python Python
+@flowgate.agent(budget=0.50, compliance="gdpr")
+async def eu_agent(query: str):
+    """Process EU data — only GDPR-approved models, $0.50 max."""
+    return await llm.complete(query)
+```
+
+```typescript TypeScript
+const regulatedAgent = harnessAgent({
+  budget: 0.50,
+  compliance: 'regulated',
+})(async (query: string) => llm.complete(query));
+```
+
+</CodeGroup>
+
+## Add KPI Weights
+
+Encode business priorities into how the agent makes model decisions:
+
+<CodeGroup>
+
+```python Python
+@flowgate.agent(
+    budget=1.00,
+    kpi_weights={"quality": 0.8, "cost": 0.2},
+    kpi_targets={"quality": 0.9},
+)
+async def premium_agent(query: str):
+    """High-quality responses — prioritize quality over cost."""
+    return await llm.complete(query)
+```
+
+```typescript TypeScript
+const premiumAgent = harnessAgent({
+  budget: 1.00,
+  kpiWeights: { quality: 0.8, cost: 0.2 },
+  kpiTargets: { quality: 0.9 },
+})(async (query: string) => llm.complete(query));
+```
+
+</CodeGroup>
+
+## Different Agents, Different Policies
+
+Multiple functions can carry different policy metadata:
+
+```python
+@flowgate.agent(
+    budget=0.10,
+    kpi_weights={"cost": 0.9, "quality": 0.1},
+)
+async def triage_agent(query: str):
+    """Quick classification — optimize for cost."""
+    return await llm.complete(query)
+
+@flowgate.agent(
+    budget=2.00,
+    compliance="hipaa",
+    kpi_weights={"quality": 0.9, "cost": 0.1},
+    kpi_targets={"quality": 0.95},
+)
+async def medical_agent(query: str):
+    """Patient data — strict compliance, high quality, higher budget."""
+    return await llm.complete(query)
+
+@flowgate.agent(
+    budget=0.50,
+    max_tool_calls=5,
+)
+async def research_agent(query: str):
+    """Research with tools — capped at 5 tool calls and $0.50."""
+    return await llm.complete(query)
+```
+
+## Combine with run()
+
+Create a scoped run around the function invocation to enforce runtime controls:
+
+```python
+@flowgate.agent(budget=0.50, compliance="gdpr")
+async def my_agent(query: str):
+    return await llm.complete(query)
+
+# The run creates the active enforcement scope.
+with flowgate.run(budget=2.00) as session:
+    await my_agent("First query")
+    await my_agent("Second query")
+    print(session.summary())
+```
+
+```typescript TypeScript
+await run({ budget: 2.00 }, async (session) => {
+  await myAgent('First query');
+  await myAgent('Second query');
+  console.log(session.summary());
+});
+```
+
+## All Decorator Parameters
+
+| Parameter | Type | Description |
+|---|---|---|
+| `budget` | `float` | Max USD for this agent |
+| `compliance` | `str` | `"gdpr"`, `"hipaa"`, `"pci"`, or `"strict"` |
+| `kpi_weights` | `dict` | Relative weights: `quality`, `cost`, `latency`, `energy` |
+| `kpi_targets` | `dict` | Target values per KPI dimension |
+| `max_tool_calls` | `int` | Max tool/function calls per invocation |
+
+TypeScript uses camelCase parameter names and exports the wrapper as `harnessAgent`.
+
+<Tip>
+**Python API:** [@flowgate.agent()](/api-reference/python/agent-decorator) | **TypeScript API:** [Harness](/api-reference/typescript/harness)
+</Tip>
+
+## Next Step
+
+Understand how the Harness works under the hood. [Learn the Agent Harness →](/get-started/agent-harness)

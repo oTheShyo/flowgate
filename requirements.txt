@@ -1,0 +1,51 @@
+# flowgate Production Requirements
+# Minimal core dependencies only - provider SDKs are optional extras
+
+# ============================================================================
+# CORE DEPENDENCIES (Always Required)
+# ============================================================================
+
+# Data validation and settings
+pydantic>=2.0.0
+
+# HTTP client for API calls
+httpx>=0.25.0
+
+# Token counting and cost estimation
+tiktoken>=0.5.0
+
+# Optional: Rich terminal output (pip install flowgate[rich])
+# rich>=13.0.0
+
+
+# ============================================================================
+# PROVIDER INSTALLATION (Optional - Use Extras)
+# ============================================================================
+
+# Install specific providers as needed:
+#   pip install flowgate[openai]      → Adds openai>=1.0.0
+#   pip install flowgate[anthropic]   → Adds anthropic>=0.8.0
+#   pip install flowgate[groq]        → Adds groq>=0.4.0
+#   pip install flowgate[providers]   → Adds OpenAI + Anthropic + Groq
+#   pip install flowgate[all]         → Everything
+
+# FREE/LOCAL OPTIONS (No Python packages needed):
+#   Ollama  → Just HTTP to localhost:11434
+#   vLLM    → Can use HTTP to vLLM server (or install flowgate[vllm])
+
+
+# ============================================================================
+# INSTALLATION EXAMPLES
+# ============================================================================
+
+# Minimal (core only):
+#   pip install flowgate
+#
+# With OpenAI:
+#   pip install flowgate[openai]
+#
+# With common providers:
+#   pip install flowgate[providers]
+#
+# Everything:
+#   pip install flowgate[all]

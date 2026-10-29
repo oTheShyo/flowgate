@@ -1,0 +1,104 @@
+---
+title: Choose Your Integration
+description: Pick the right flowgate integration for your framework — LangChain, OpenAI Agents, CrewAI, Google ADK, n8n, Vercel AI, or Hermes Agent.
+---
+
+# Choose Your Integration
+
+flowgate integrates with every major agent framework. Pick the one that matches your stack.
+
+## Quick Decision
+
+| If you use... | Install | Integration type | Guide |
+|---|---|---|---|
+| **LangChain / LangGraph** | `pip install flowgate[langchain]` | Callback handler | [LangChain →](/integrations/langchain) |
+| **OpenAI Agents SDK** | `pip install flowgate[openai-agents]` | ModelProvider | [OpenAI Agents →](/integrations/openai-agents) |
+| **CrewAI** | `pip install flowgate[crewai]` | llm_hooks | [CrewAI →](/integrations/crewai) |
+| **Google ADK** | `pip install flowgate[google-adk]` | BasePlugin | [Google ADK →](/integrations/google-adk) |
+| **Vercel AI SDK** | `npm install @flowgate/vercel-ai` | Middleware | [Vercel AI →](/integrations/vercel-ai) |
+| **n8n** | `npm install @flowgate/n8n-nodes-flowgate` | Community node | [n8n →](/integrations/n8n) |
+| **Hermes Agent** | `pip install flowgate` | Delegation router | [Hermes Agent →](/integrations/hermes-agent) |
+| **Direct SDK calls** | `pip install flowgate` | `init()` + `run()` | [Observe →](/get-started/observe) |
+| **TypeScript (no framework)** | `npm install @flowgate/core` | CascadeAgent | [Core →](/api-reference/typescript/core) |
+
+## By Language
+
+### Python
+
+All Python integrations share the same Harness API — `init()`, `run()`, `@agent()`. The framework integration handles the bridge:
+
+```python
+# LangChain — callback handler
+from flowgate.integrations.langchain import FlowGateHandler
+handler = FlowGateHandler()
+chain.invoke(query, config={"callbacks": [handler]})
+
+# OpenAI Agents — model provider
+from flowgate.integrations.openai_agents import FlowGateModelProvider
+provider = FlowGateModelProvider()
+
+# CrewAI — hooks
+from flowgate.integrations.crewai import FlowGateHooks
+hooks = FlowGateHooks()
+
+# Google ADK — plugin
+from flowgate.integrations.google_adk import FlowGatePlugin
+plugin = FlowGatePlugin()
+
+# Hermes Agent — delegation router
+from flowgate.integrations.hermes import HermesDelegationRouter
+router = HermesDelegationRouter.from_dict({"enabled": True, "mode": "observe"})
+```
+
+### TypeScript
+
+```typescript
+// Core (standalone)
+import { CascadeAgent } from '@flowgate/core';
+
+// Vercel AI SDK (middleware)
+import { createChatHandler } from '@flowgate/vercel-ai';
+
+// LangChain (withCascade)
+import { withCascade } from '@flowgate/langchain';
+```
+
+## Which One If You Are Not Sure?
+
+<CardGroup cols={2}>
+  <Card title="Python + any framework" icon="python" href="/get-started/observe">
+    Start with `flowgate.init(mode="observe")`. Works with direct SDK calls. Add a framework integration later.
+  </Card>
+  <Card title="TypeScript + Next.js" icon="js" href="/integrations/vercel-ai">
+    Use `@flowgate/vercel-ai` for AI SDK streaming and tool execution.
+  </Card>
+  <Card title="Multi-agent orchestration" icon="diagram-project" href="/integrations/langchain">
+    LangChain/LangGraph gives you the deepest integration — callbacks, cost tracking, LangSmith.
+  </Card>
+  <Card title="No-code / Low-code" icon="wand-magic-sparkles" href="/integrations/n8n">
+    n8n community nodes for visual workflow automation.
+  </Card>
+  <Card title="Hermes subagents" icon="route" href="/integrations/hermes-agent">
+    Per-skill, complexity-aware, and topic-aware routing for delegated agents.
+  </Card>
+</CardGroup>
+
+## All Integrations
+
+For a full comparison matrix including feature coverage per framework, see [Integrations Overview →](/integrations/overview)
+
+## You're Ready
+
+You've completed the Getting Started path. From here:
+
+<CardGroup cols={3}>
+  <Card title="Harness Deep Dive" icon="shield-halved" href="/harness/overview">
+    Full reference for all six dimensions.
+  </Card>
+  <Card title="Examples" icon="code" href="/examples/catalog">
+    75+ working examples on GitHub.
+  </Card>
+  <Card title="API Reference" icon="book" href="/api-reference/python/init">
+    Complete Python and TypeScript APIs.
+  </Card>
+</CardGroup>

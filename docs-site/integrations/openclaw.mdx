@@ -1,0 +1,54 @@
+---
+title: OpenClaw
+description: Secondary OpenClaw integration path using flowgate as an OpenAI-compatible provider.
+---
+
+Use this page when you want OpenClaw to route model calls through flowgate without rewriting OpenClaw itself.
+
+## Integration Model
+
+OpenClaw can call flowgate through an OpenAI-compatible interface. That makes this a secondary integration path focused on compatibility and routing, not the primary harness entry path.
+
+## Typical Flow
+
+1. Start the flowgate OpenAI-compatible server.
+2. Point OpenClaw at that base URL as a custom provider.
+3. Optionally pass routing hints, tenant metadata, or channel information.
+4. Optionally enable harness mode for in-loop runtime policy decisions.
+
+## Optional Harness Toggle
+
+OpenClaw integration stays compatibility-first, but you can opt into harness behavior
+at server startup:
+
+- `--harness-mode off` (default)
+- `--harness-mode observe` (recommended first step)
+- `--harness-mode enforce` (active controls with budgets/limits)
+
+Example:
+
+```bash
+python -m flowgate.integrations.openclaw.openai_server \
+  --port 8084 \
+  --harness-mode observe
+```
+
+## Why Teams Use It
+
+- Reuse OpenClaw without invasive changes
+- Centralize provider routing through flowgate
+- Add channel or tenant-aware routing behavior
+
+## Deep Guide
+
+- [openclaw_provider.md](https://github.com/oTheShyo/flowgate/blob/main/docs/guides/openclaw_provider.md)
+
+## Important Notes
+
+- Treat this as a secondary integration surface.
+- The main product direction remains the in-process runtime-intelligence layer.
+- Use direct integrations first when you want full harness semantics inside the workflow.
+
+<Tip>
+**Guide on GitHub:** [docs/guides/openclaw_provider.md](https://github.com/oTheShyo/flowgate/blob/main/docs/guides/openclaw_provider.md)
+</Tip>

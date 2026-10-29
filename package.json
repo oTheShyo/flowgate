@@ -1,0 +1,35 @@
+{
+  "name": "flowgate-monorepo",
+  "version": "1.0.0",
+  "private": true,
+  "description": "flowgate monorepo - Python and TypeScript libraries",
+  "author": {
+    "name": "flowgate maintainers",
+    "email": "hello@flowgate.dev"
+  },
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/oTheShyo/flowgate.git"
+  },
+  "scripts": {
+    "build": "turbo run build",
+    "dev": "turbo run dev",
+    "test": "turbo run test",
+    "lint": "turbo run lint",
+    "clean": "turbo run clean",
+    "docs:check-typescript": "pnpm --filter @flowgate/core exec node ../../scripts/check-docs-typescript.mjs",
+    "verify:npm:pack": "node scripts/verify-npm-packages.mjs"
+  },
+  "devDependencies": {
+    "turbo": "^1.11.0"
+  },
+  "engines": {
+    "node": ">=18.0.0",
+    "pnpm": ">=8.0.0"
+  },
+  "packageManager": "pnpm@8.15.0",
+  "dependencies": {
+    "tsx": "^4.7.0"
+  }
+}

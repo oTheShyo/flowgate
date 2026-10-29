@@ -1,0 +1,196 @@
+---
+title: Agent Harness
+description: The runtime governance layer that tracks, scores, and enforces constraints across every agent step.
+---
+
+# Agent Harness
+
+The Harness is the core of flowgate's runtime intelligence. It wraps agent execution and decides whether a model call should proceed, switch models, remove tools, or stop.
+
+## What the Harness Does
+
+At every LLM call or tool execution inside an agent loop, the Harness:
+
+1. **Checks hard constraints**: Budget remaining, compliance allowlist, tool-call cap, latency limit, and energy limit.
+2. **Scores soft dimensions**: Quality, cost, latency, and energy weighted by KPI priorities.
+3. **Decides an action**: `allow`, `switch_model`, `deny_tool`, or `stop`.
+4. **Records a trace**: Action, reason, model, step, cost, and budget state.
+
+In `observe` mode, decisions are recorded but not enforced. In `enforce` mode, they shape execution in real time.
+
+## HarnessConfig
+
+Harness behavior is configured through one language-specific object.
+
+<CodeGroup>
+
+```python Python
+from flowgate import HarnessConfig
+
+config = HarnessConfig(
+    mode="enforce",                     # "off" | "observe" | "enforce"
+    verbose=False,                      # Print decisions to stderr
+
+    # Hard constraints
+    budget=0.50,                        # Max USD for the run
+    max_tool_calls=10,                  # Max tool/function calls
+    max_latency_ms=5000.0,              # Max wall-clock ms per call
+    max_energy=100.0,                   # Max energy units
+
+    # Soft scoring
+    kpi_weights={                       # Relative importance
+        "quality": 0.6,
+        "cost": 0.3,
+        "latency": 0.1,
+    },
+    kpi_targets={"quality": 0.9},       # Target values for KPI dimensions
+
+    # Compliance
+    compliance="gdpr",                  # "gdpr" | "hipaa" | "pci" | "strict"
+)
+```
+
+```typescript TypeScript
+import type { HarnessConfig } from '@flowgate/core';
+
+const config: HarnessConfig = {
+  mode: 'enforce',
+  verbose: false,
+  budget: 0.50,
+  maxToolCalls: 10,
+  maxLatencyMs: 5000,
+  maxEnergy: 100,
+  kpiWeights: { quality: 0.6, cost: 0.3, latency: 0.1 },
+  compliance: 'regulated',
+};
+```
+
+</CodeGroup>
+
+## The Three-Tier API
+
+flowgate offers three levels of control. Use the one that fits your needs.
+
+### Tier 1: Global Init (Zero-Change)
+
+<CodeGroup>
+
+```python Python
+import flowgate
+flowgate.init(mode="observe")
+# All LLM calls are tracked. Nothing changes.
+```
+
+```typescript TypeScript
+import { init } from '@flowgate/core';
+
+init({ mode: 'observe' });
+// Instrumented OpenAI and Anthropic SDK calls are tracked.
+```
+
+</CodeGroup>
+
+Best for: first rollout, measuring baseline costs, auditing compliance.
+
+### Tier 2: Scoped Run (Block-Level Control)
+
+<CodeGroup>
+
+```python Python
+flowgate.init(mode="enforce")
+
+with flowgate.run(budget=0.50, compliance="gdpr") as session:
+    result = await agent.run("Analyze EU data")
+    print(session.summary())
+```
+
+```typescript TypeScript
+import { init, run } from '@flowgate/core';
+
+init({ mode: 'enforce' });
+
+await run({ budget: 0.50, compliance: 'regulated' }, async (session) => {
+  await agent.run('Analyze regulated data');
+  console.log(session.summary());
+});
+```
+
+</CodeGroup>
+
+Best for: per-request budgets, scoped policy, session-level metrics.
+
+### Tier 3: Agent Decorator (Per-Agent Policy)
+
+<CodeGroup>
+
+```python Python
+@flowgate.agent(
+    budget=1.00,
+    compliance="hipaa",
+    kpi_weights={"quality": 0.8, "cost": 0.2},
+)
+async def medical_agent(query: str):
+    return await llm.complete(query)
+```
+
+```typescript TypeScript
+import { harnessAgent } from '@flowgate/core';
+
+const medicalAgent = harnessAgent({
+  budget: 1.00,
+  compliance: 'regulated',
+  kpiWeights: { quality: 0.8, cost: 0.2 },
+})(async (query: string) => llm.complete(query));
+```
+
+</CodeGroup>
+
+Best for: Attaching policy metadata in multi-agent systems. Use a scoped `run()` when the policy must be enforced.
+
+## Decision Priority
+
+When the Harness evaluates a step, it follows a strict priority order:
+
+| Priority | Check | Action if violated |
+|---|---|---|
+| 1 | Budget exhausted | `stop` |
+| 2 | Tool call cap | `deny_tool` |
+| 3 | Compliance allowlist | `switch_model`, `deny_tool`, or `stop` |
+| 4 | Latency limit | `switch_model` |
+| 5 | Energy limit | `switch_model` |
+| 6 | KPI scoring | `allow` or `switch_model` |
+
+Hard constraints (budget, compliance) always take priority over soft scoring (KPI weights).
+
+## Six Dimensions at a Glance
+
+| Dimension | Hard cap | Soft scoring | Deep dive |
+|---|---|---|---|
+| **Cost** | `budget` | `kpi_weights.cost` | [Budget Enforcement](/harness/budget-enforcement) |
+| **Quality** | — | `kpi_weights.quality` | [KPI Optimization](/harness/kpi-optimization) |
+| **Latency** | `max_latency_ms` | `kpi_weights.latency` | [KPI Optimization](/harness/kpi-optimization) |
+| **Compliance** | `compliance` | — | [Compliance Gating](/harness/compliance) |
+| **Energy** | `max_energy` | `kpi_weights.energy` | [Energy Tracking](/harness/energy-tracking) |
+| **Tool calls** | `max_tool_calls` | — | [Budget Enforcement](/harness/budget-enforcement) |
+
+## Observe vs Enforce
+
+| Behavior | Observe | Enforce |
+|---|---|---|
+| Tracks cost, latency, energy | Yes | Yes |
+| Records decision trace | Yes | Yes |
+| Blocks on budget exceeded | No | Yes |
+| Switches non-compliant models | No | Yes |
+| Denies tool calls at cap | No | Yes |
+| Stops execution | No | Yes |
+| `trace()` record `applied` field | `false` | `true` |
+
+Start with `observe` to validate your policies against real traffic. Switch to `enforce` when you are confident the rules are correct.
+
+<Tip>
+**Python API:** [HarnessConfig](/api-reference/python/harness-config) | **TypeScript API:** [Harness](/api-reference/typescript/harness) | **Parity notes:** [Python and TypeScript Parity](/api-reference/typescript/feature-parity)
+</Tip>
+
+## Next Step
+
+See how the Harness operates inside multi-step agent loops. [Understand the Agent Loop →](/get-started/agent-loop)

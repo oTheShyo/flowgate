@@ -1,0 +1,93 @@
+---
+title: Streaming
+description: TypeScript streaming API with StreamEvent, StreamEventType, and async iterators for real-time cascade output.
+---
+
+# Streaming
+
+`CascadeAgent` supports streaming via `streamEvents()` and `stream()` async iterators.
+
+## streamEvents()
+
+```typescript
+import { CascadeAgent, StreamEventType } from '@flowgate/core';
+
+const agent = new CascadeAgent({
+  models: [
+    { name: 'gpt-4o-mini', provider: 'openai', cost: 0.00015 },
+    { name: 'gpt-4o', provider: 'openai', cost: 0.0025 },
+  ],
+});
+
+for await (const event of agent.streamEvents('Explain TypeScript')) {
+  switch (event.type) {
+    case StreamEventType.ROUTING:
+      console.log(`Routing: ${event.data.strategy}`);
+      break;
+    case StreamEventType.CHUNK:
+      process.stdout.write(event.content);
+      break;
+    case StreamEventType.DRAFT_DECISION:
+      console.log(`Draft ${event.data.accepted ? 'accepted' : 'rejected'}`);
+      break;
+    case StreamEventType.COMPLETE:
+      console.log(`\nModel: ${event.data.result?.modelUsed}`);
+      console.log(`Cost: $${event.data.result?.totalCost ?? 0}`);
+      break;
+  }
+}
+```
+
+## StreamEvent
+
+```typescript
+interface StreamEvent {
+  type: StreamEventType;
+  content: string;
+  data: StreamEventData;
+}
+```
+
+| Field | Type | Description |
+|---|---|---|
+| `type` | `StreamEventType` | Event type |
+| `content` | `string` | Content chunk (for `CHUNK` events) |
+| `data` | `StreamEventData` | Event metadata |
+
+## StreamEventType
+
+| Value | Description |
+|---|---|
+| `ROUTING` | Routing decision made |
+| `CHUNK` | Content chunk received |
+| `DRAFT_DECISION` | Draft quality validation result |
+| `SWITCH` | Switching from drafter to verifier |
+| `COMPLETE` | Streaming complete |
+| `ERROR` | Error occurred |
+
+## StreamEventData
+
+| Field | Type | Description |
+|---|---|---|
+| `model` | `string` | Current model name |
+| `phase` | `string` | Current phase (`draft`, `verifier`, or `direct`) |
+| `strategy` | `string` | Routing strategy used |
+| `accepted` | `boolean` | Whether draft was accepted (on `DRAFT_DECISION`) |
+| `result` | `CascadeResult` | Final result on `COMPLETE` |
+| `reason` | `string` | Routing or validation reason |
+| `score` | `number` | Quality score when available |
+| `from_model` / `to_model` | `string` | Model transition on `SWITCH` |
+
+## StreamEventsOptions
+
+Streaming options include the shared generation, knowledge, tool, routing, and provider options from `agent.run()`.
+
+```typescript
+for await (const event of agent.streamEvents('Query', {
+  maxTokens: 500,
+  temperature: 0.7,
+  systemPrompt: 'You are a helpful assistant.',
+})) {
+  // ...
+}
+```

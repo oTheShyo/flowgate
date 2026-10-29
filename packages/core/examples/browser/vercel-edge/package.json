@@ -1,0 +1,18 @@
+{
+  "name": "flowgate-vercel-edge-example",
+  "version": "1.0.0",
+  "private": true,
+  "description": "flowgate Vercel Edge Function example",
+  "type": "module",
+  "scripts": {
+    "dev": "vercel dev",
+    "deploy": "vercel deploy --prod"
+  },
+  "dependencies": {
+    "@flowgate/core": "workspace:*",
+    "openai": "^4.73.1"
+  },
+  "devDependencies": {
+    "vercel": "^37.0.0"
+  }
+}

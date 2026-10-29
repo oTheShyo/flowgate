@@ -1,0 +1,5 @@
+include LICENSE
+include README.md
+recursive-include flowgate py.typed
+recursive-exclude tests *
+recursive-exclude examples *

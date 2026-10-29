@@ -1,0 +1,253 @@
+---
+title: Agent Loop
+description: How flowgate operates inside multi-step agent execution — tool interception, budget tracking across steps, sub-agent handoffs, and decision traces.
+---
+
+# Inside the Agent Loop
+
+Most AI optimization operates at the HTTP boundary — one request in, one response out. flowgate operates **inside the agent loop**, with full visibility into every step of multi-turn execution.
+
+## Why This Matters
+
+A typical agent workflow is not one call. It is a **loop**:
+
+```
+Query → Model Call → Tool Call → Model Call → Tool Call → Model Call → Response
+  ↑         ↑            ↑           ↑            ↑           ↑
+  └── flowgate evaluates every decision boundary ──────────┘
+```
+
+Each arrow is a decision point where flowgate can measure, score, and act. External proxies see only the outer boundary. flowgate sees all of them.
+
+## Tool Call Interception
+
+flowgate tracks and optionally gates tool calls as part of the agent loop:
+
+```python
+import flowgate
+from flowgate.tools import ToolConfig, ToolExecutor
+
+tools = [
+    ToolConfig(
+        name="search",
+        description="Search the web",
+        parameters={"query": {"type": "string"}},
+        handler=lambda query: f"Results for: {query}",
+    ),
+    ToolConfig(
+        name="calculator",
+        description="Evaluate math expressions",
+        parameters={"expression": {"type": "string"}},
+        handler=lambda expression: str(eval(expression)),
+    ),
+]
+
+flowgate.init(mode="enforce")
+
+with flowgate.run(budget=1.00, max_tool_calls=5) as session:
+    result = await agent.run(
+        "Research this topic and calculate the statistics",
+        tools=tools,
+        tool_executor=ToolExecutor(tools=tools),
+        max_steps=10,
+    )
+
+    summary = session.summary()
+    print(f"Tool calls used: {summary['tool_calls']}/5")
+    print(f"Budget used: ${summary['cost']:.4f}/$1.00")
+```
+
+When the tool call cap is reached, flowgate issues a `deny_tool` action — the agent continues with what it has instead of making more calls.
+
+## Budget Tracking Across Steps
+
+The Harness tracks cumulative spend across every step in the loop. This prevents cost surprises in deep agent workflows:
+
+```python
+with flowgate.run(budget=0.50) as session:
+    result = await agent.run("Deep multi-step analysis")
+
+    for record in session.trace():
+        print(
+            f"Step {record['step']}: "
+            f"{record['action']} | "
+            f"model={record['model']} | "
+            f"spent=${record['cost_total']:.4f} | "
+            f"budget={record['budget_state']}"
+        )
+    # Step 1: allow        | model=gpt-4o-mini | spent=$0.0012 | budget=ok
+    # Step 2: allow        | model=gpt-4o-mini | spent=$0.0031 | budget=ok
+    # Step 3: switch_model | model=gpt-4o      | spent=$0.0245 | budget=ok
+    # Step 4: allow        | model=gpt-4o-mini | spent=$0.0258 | budget=ok
+    # ...
+    # Step 9: stop         | model=gpt-4o      | spent=$0.5012 | budget=exceeded
+```
+
+The agent ran 9 steps before hitting the budget cap. Without flowgate, step 10-15 would have added unchecked cost.
+
+## Sub-Agent Handoffs
+
+When agents delegate to other agents, flowgate tracks budget and policy across the entire chain:
+
+```python
+researcher = CascadeAgent(models=[
+    ModelConfig(name="gpt-4o-mini", provider="openai", cost=0.000375),
+    ModelConfig(name="gpt-4o", provider="openai", cost=0.00625),
+])
+
+async def research_handler(query: str) -> str:
+    """Sub-agent: researches a topic."""
+    result = await researcher.run(query)
+    return result.content
+
+tools = [
+    ToolConfig(
+        name="research",
+        description="Delegate research to a specialist agent",
+        parameters={"query": {"type": "string"}},
+        handler=research_handler,
+    ),
+]
+
+# One budget governs the entire agent tree
+with flowgate.run(budget=2.00) as session:
+    result = await main_agent.run(
+        "Analyze and research this topic",
+        tools=tools,
+    )
+    # session.summary() includes costs from main_agent AND researcher
+    print(f"Total cost across all agents: ${session.summary()['cost']:.4f}")
+```
+
+## Model Switching Mid-Loop
+
+The Harness can switch models during execution based on context:
+
+```python
+# Quality-driven: cheaper model handles simple steps, better model handles hard ones
+with flowgate.run(
+    kpi_weights={"quality": 0.7, "cost": 0.3},
+    kpi_targets={"quality": 0.85},
+) as session:
+    result = await agent.run("Complex multi-step reasoning task")
+
+    # Trace shows model decisions per step
+    for record in session.trace():
+        if record['action'] == 'switch_model':
+            print(f"Step {record['step']}: Switched to {record['model']} — {record['reason']}")
+```
+
+## Latency Advantage in Loops
+
+Every extra hop matters inside a loop. Proxy-based solutions add 40-60ms per call. In a 10-step agent loop, that is 400-600ms of pure overhead — latency that has nothing to do with the actual work.
+
+flowgate adds &lt;1ms per step because it runs in-process:
+
+| Agent loop depth | Proxy overhead | flowgate overhead |
+|---|---|---|
+| 5 steps | 200-300ms | &lt;5ms |
+| 10 steps | 400-600ms | &lt;10ms |
+| 25 steps | 1-1.5s | &lt;25ms |
+
+For real-time UX, task throughput, and enterprise SLA performance, this compounding matters.
+
+## Complete Loop Example
+
+```python
+import flowgate
+from flowgate import CascadeAgent, ModelConfig
+from flowgate.tools import ToolConfig, ToolExecutor
+
+agent = CascadeAgent(models=[
+    ModelConfig(name="gpt-4o-mini", provider="openai", cost=0.000375),
+    ModelConfig(name="gpt-4o", provider="openai", cost=0.00625),
+])
+
+tools = [
+    ToolConfig(name="search", description="Web search", parameters={"q": {"type": "string"}},
+              handler=lambda q: f"Results for {q}"),
+    ToolConfig(name="calc", description="Calculator", parameters={"expr": {"type": "string"}},
+              handler=lambda expr: str(eval(expr))),
+]
+
+flowgate.init(mode="enforce")
+
+with flowgate.run(
+    budget=1.00,
+    max_tool_calls=8,
+    compliance="gdpr",
+    kpi_weights={"quality": 0.6, "cost": 0.3, "latency": 0.1},
+) as session:
+    result = await agent.run(
+        "Research EU market data and calculate growth rates",
+        tools=tools,
+        tool_executor=ToolExecutor(tools=tools),
+        max_steps=15,
+    )
+
+    summary = session.summary()
+    print(f"Cost: ${summary['cost']:.4f} / $1.00")
+    print(f"Steps: {summary['step_count']}")
+    print(f"Tool calls: {summary['tool_calls']} / 8")
+    print(f"Budget remaining: ${summary['budget_remaining']:.4f}")
+```
+
+## Complete TypeScript Loop
+
+```typescript
+import {
+  CascadeAgent,
+  ToolConfig,
+  ToolExecutor,
+  init,
+  run,
+} from '@flowgate/core';
+
+const searchTool = new ToolConfig({
+  name: 'search',
+  description: 'Search a data source',
+  parameters: {
+    type: 'object',
+    properties: { query: { type: 'string' } },
+    required: ['query'],
+  },
+  function: async ({ query }: { query: string }) => `Results for ${query}`,
+});
+
+const executor = new ToolExecutor([searchTool]);
+const agent = new CascadeAgent({
+  models: [
+    { name: 'gpt-4o-mini', provider: 'openai', cost: 0.00015, supportsTools: true },
+    { name: 'gpt-4o', provider: 'openai', cost: 0.0025, supportsTools: true },
+  ],
+  toolExecutor: executor,
+});
+
+init({ mode: 'enforce' });
+
+await run({
+  budget: 1.00,
+  maxToolCalls: 8,
+  compliance: 'regulated',
+  kpiWeights: { quality: 0.6, cost: 0.3, latency: 0.1 },
+}, async (session) => {
+  await agent.run('Research market data', {
+    tools: [searchTool.toOpenAIFormat()],
+    maxSteps: 15,
+  });
+
+  const summary = session.summary();
+  console.log(`Cost: $${summary.cost.toFixed(4)} / $1.00`);
+  console.log(`Steps: ${summary.stepCount}`);
+  console.log(`Tool calls: ${summary.toolCalls} / 8`);
+  console.log(`Budget remaining: $${summary.budgetRemaining?.toFixed(4)}`);
+});
+```
+
+<Tip>
+**Python examples:** [examples/agentic_multi_agent.py](https://github.com/oTheShyo/flowgate/blob/main/examples/agentic_multi_agent.py) | **TypeScript guide:** [Agentic Patterns](https://github.com/oTheShyo/flowgate/blob/main/docs/guides/agentic-typescript.md)
+</Tip>
+
+## Next Step
+
+Plan your production rollout. [Follow the Rollout Guide →](/get-started/rollout-guide)

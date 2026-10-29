@@ -1,0 +1,101 @@
+# flowgate Documentation
+
+> **Full documentation is now at [docs.flowgate.dev](https://docs.flowgate.dev)** — the Mintlify-powered docs site is the primary reference for flowgate's agent runtime intelligence layer. The guides below remain for quick reference and deep links.
+
+Agent runtime intelligence layer — optimize cost, latency, quality, budget, compliance, and energy across AI agent workflows. In-process harness, not a proxy.
+
+## Quick Links
+
+- [Installation Guide](INSTALLATION.md)
+- [Quick Start Guide](guides/quickstart.md)
+
+## 🚀 Getting Started
+
+### Core Concepts
+- [Quickstart](guides/quickstart.md) - Get started with flowgate in 5 minutes
+- [Python Harness Quickstart](guides/python_harness_quickstart.md) - `init`, `run`, and `@agent` for in-process policy control
+- [Providers](guides/providers.md) - Configure and use different AI providers (OpenAI, Anthropic, Groq, Ollama, etc.)
+- [Presets](guides/presets.md) - Use built-in presets for common use cases
+- [Gateway Server](guides/gateway.md) - Drop-in OpenAI/Anthropic-compatible endpoint for existing apps
+
+### Core Features
+- [Streaming](guides/streaming.md) - Stream responses from cascade agents
+- [Tools](guides/tools.md) - Function calling and tool usage with cascades
+- [Agentic Patterns (Python)](guides/agentic-python.md) - Tool loops and multi-agent orchestration in Python
+- [Agentic Patterns (TypeScript)](guides/agentic-typescript.md) - Tool loops, multi-agent orchestration, and message best practices
+- [Harness Telemetry & Privacy](guides/harness_telemetry_privacy.md) - Decision traces, callbacks, and privacy-safe observability
+- [Cost Tracking](guides/cost_tracking.md) - Track and analyze API costs across queries
+- [Versioned Knowledge Context](guides/knowledge_context.md) - Safe, cache-aware knowledge handoff across model switches
+- [Proxy Routing](guides/proxy.md) - Route requests through provider-aware proxy plans
+
+## 🏭 Production & Advanced
+
+### Production Deployment
+- [Production Guide](guides/production.md) - Best practices for production deployments
+- [Performance Guide](guides/performance.md) - Optimize cascade performance and latency
+- [FastAPI Integration](guides/fastapi.md) - Integrate flowgate with FastAPI applications
+
+### Advanced Topics
+- [Custom Cascades](guides/custom_cascade.md) - Build custom cascade strategies
+- [Custom Validation](guides/custom_validation.md) - Implement custom quality validators
+- [Edge Device Deployment](guides/edge_device.md) - Deploy cascades on edge devices (Jetson, etc.)
+- [Browser/Edge Runtime](guides/browser_cascading.md) - Run cascades in browser or edge environments
+### Integrations
+- [LangChain Integration](guides/langchain_integration.md) - Callback handler for LangChain/LangGraph with harness-aware cascading
+- [OpenAI Agents SDK Integration](guides/openai_agents_integration.md) - Harness-aware model provider for existing OpenAI Agents apps
+- [CrewAI Integration](guides/crewai_integration.md) - Hook-based harness metrics + budget gating (opt-in)
+- [Google ADK Integration](guides/google_adk_integration.md) - Plugin-based harness integration for ADK runners (opt-in)
+- [n8n Integration](guides/n8n_integration.md) - Use flowgate in n8n workflows
+- [Paygentic Integration](guides/paygentic_integration.md) - Usage metering and billing lifecycle helpers (opt-in)
+- [MCP Integration](guides/mcp_integration.md) - Use flowgate routing from ChatGPT and Claude clients
+
+## 📚 Examples
+
+Comprehensive working code samples:
+
+**Python Examples:** [examples/](../examples/)
+- Basic usage, preset usage, multi-provider
+- Tool execution, streaming, cost tracking
+- Production patterns, FastAPI integration
+- Edge device deployment, vLLM integration
+- Custom cascades and validation
+
+**TypeScript Examples:** [packages/core/examples/](../packages/core/examples/)
+- Basic usage, tool calling, multi-provider
+- Streaming responses
+- Production patterns
+- Browser/Vercel Edge deployment
+
+## 🤝 Need Help?
+
+- 📖 [GitHub Discussions](https://github.com/oTheShyo/flowgate/discussions) - Q&A and community support
+- 🐛 [GitHub Issues](https://github.com/oTheShyo/flowgate/issues) - Bug reports and feature requests
+- 📧 [Email Support](mailto:hello@flowgate.dev) - Direct support
+
+## 📦 API Reference
+
+Comprehensive API documentation for all classes and methods:
+
+- **[API Overview](./api/README.md)** - Complete API reference for Python and TypeScript
+- **Python API**
+  - [CascadeAgent](./api/python/agent.md) - Main agent class
+  - [ModelConfig](./api/python/config.md) - Model and cascade configuration
+  - [CascadeResult](./api/python/result.md) - Result object with 30+ diagnostic fields
+- **TypeScript API**
+  - See [TypeScript Package](../packages/core/README.md) for API documentation
+
+See also: Comprehensive examples in [/examples](../examples/) directory
+
+## 🏗️ Architecture & Contributing
+
+For contributors and advanced users:
+
+- **[Architecture Guide](ARCHITECTURE.md)** - Detailed architecture, data flow, and code organization
+- **[Contributing Guide](../CONTRIBUTING.md)** - How to contribute to flowgate
+
+The architecture guide covers:
+- Directory structure (monorepo layout)
+- Core components and design patterns
+- Data flow and execution paths
+- Adding new providers, quality checks, and routing strategies
+- Testing strategy and development workflow

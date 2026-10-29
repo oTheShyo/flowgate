@@ -1,0 +1,340 @@
+name: Tests
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+    branches: [main, develop]
+
+jobs:
+  # Python Tests
+  test-python:
+    name: Python Tests (${{ matrix.python-version }} on ${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+        python-version: ['3.9', '3.10', '3.11', '3.12', '3.13']
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev]"
+
+      - name: Run tests with pytest
+        run: |
+          pytest tests/ -v -m "not integration and not requires_api and not requires_ollama and not requires_vllm" --cov=flowgate --cov-report=xml --cov-report=term-missing
+        env:
+          PYTHONPATH: ${{ github.workspace }}
+
+      - name: Upload coverage to Codecov
+        if: matrix.os == 'ubuntu-latest' && matrix.python-version == '3.11'
+        uses: codecov/codecov-action@v4
+        with:
+          file: ./coverage.xml
+          flags: python
+          fail_ci_if_error: false
+          token: ${{ secrets.CODECOV_TOKEN }}
+
+  # Python opt-in integration install + focused tests
+  test-python-optional-integrations:
+    name: Python Optional Integrations (${{ matrix.integration }} / py${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - integration: openai-agents
+            python-version: '3.9'
+            extras: ".[dev,openai,openai-agents]"
+            tests: "tests/test_openai_agents_integration.py"
+          - integration: openai-agents
+            python-version: '3.11'
+            extras: ".[dev,openai,openai-agents]"
+            tests: "tests/test_openai_agents_integration.py"
+          - integration: crewai
+            python-version: '3.11'
+            extras: ".[dev,crewai,openai]"
+            tests: "tests/test_crewai_integration.py"
+          - integration: google-adk
+            python-version: '3.11'
+            extras: ".[dev,google-adk]"
+            tests: "tests/test_google_adk_integration.py"
+          - integration: mcp
+            python-version: '3.11'
+            extras: ".[dev,mcp]"
+            tests: "tests/test_mcp_integration.py"
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: 'pip'
+
+      - name: Install integration dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e "${{ matrix.extras }}"
+
+      - name: Run focused integration tests
+        run: |
+          pytest ${{ matrix.tests }} -v
+        env:
+          PYTHONPATH: ${{ github.workspace }}
+
+  # TypeScript Core Tests
+  test-typescript-core:
+    name: TypeScript Core Tests
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v3
+        with:
+          version: 8
+
+      - name: Get pnpm store directory
+        shell: bash
+        run: |
+          echo "STORE_PATH=$(pnpm store path --silent)" >> $GITHUB_ENV
+
+      - name: Setup pnpm cache
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.STORE_PATH }}
+          key: ${{ runner.os }}-pnpm-store-${{ hashFiles('**/pnpm-lock.yaml') }}
+          restore-keys: |
+            ${{ runner.os }}-pnpm-store-
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build TypeScript packages
+        run: |
+          pnpm --filter @flowgate/ml build
+          pnpm --filter @flowgate/core build
+
+      - name: Run TypeScript tests
+        run: pnpm --filter @flowgate/core test
+
+      - name: Upload coverage
+        if: always()
+        uses: codecov/codecov-action@v4
+        with:
+          files: ./packages/core/coverage/coverage.xml
+          flags: typescript
+          fail_ci_if_error: false
+          token: ${{ secrets.CODECOV_TOKEN }}
+
+  test-npm-pack-integrity:
+    name: NPM Pack Integrity
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v3
+        with:
+          version: 8
+
+      - name: Get pnpm store directory
+        shell: bash
+        run: |
+          echo "STORE_PATH=$(pnpm store path --silent)" >> $GITHUB_ENV
+
+      - name: Setup pnpm cache
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.STORE_PATH }}
+          key: ${{ runner.os }}-pnpm-store-${{ hashFiles('**/pnpm-lock.yaml') }}
+          restore-keys: |
+            ${{ runner.os }}-pnpm-store-
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Verify npm package tarballs
+        run: pnpm run verify:npm:pack
+
+  # n8n Integration Tests
+  test-n8n:
+    name: n8n Integration Tests
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v3
+        with:
+          version: 8
+
+      - name: Get pnpm store directory
+        shell: bash
+        run: |
+          echo "STORE_PATH=$(pnpm store path --silent)" >> $GITHUB_ENV
+
+      - name: Setup pnpm cache
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.STORE_PATH }}
+          key: ${{ runner.os }}-pnpm-store-${{ hashFiles('**/pnpm-lock.yaml') }}
+          restore-keys: |
+            ${{ runner.os }}-pnpm-store-
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build n8n package
+        run: |
+          pnpm --filter @flowgate/ml build
+          pnpm --filter @flowgate/core build
+          pnpm --filter @flowgate/n8n-nodes-flowgate build
+
+      - name: Lint n8n package
+        run: pnpm --filter @flowgate/n8n-nodes-flowgate lint
+
+      - name: Smoke load built n8n nodes
+        run: |
+          node -e "require('./packages/integrations/n8n/dist/nodes/LmChatFlowGate/LmChatFlowGate.node.js')"
+          node -e "require('./packages/integrations/n8n/dist/nodes/FlowGateAgent/FlowGateAgent.node.js')"
+
+      - name: Test n8n package
+        run: pnpm --filter @flowgate/n8n-nodes-flowgate test
+
+  # Python Code Quality
+  lint-python:
+    name: Python Code Quality
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          # Pin Black to the last version that supports Python 3.9.
+          # The repo supports Python >=3.9, and newer Black releases may format
+          # differently (or drop 3.9), causing CI-only formatting failures.
+          # Pin Ruff to avoid CI-only lint drift as Ruff evolves.
+          pip install "black==25.11.0" "ruff==0.15.0" mypy types-PyYAML
+
+      - name: Check formatting with Black
+        run: black --check flowgate tests examples
+
+      - name: Lint with Ruff
+        run: ruff check flowgate tests examples
+
+      - name: Type check with mypy
+        run: mypy flowgate --ignore-missing-imports
+
+  # TypeScript Code Quality
+  lint-typescript:
+    name: TypeScript Code Quality
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v3
+        with:
+          version: 8
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build ml package for type checking
+        run: pnpm --filter @flowgate/ml build
+
+      - name: Build core package for type checking
+        run: pnpm --filter @flowgate/core build
+
+      - name: Lint TypeScript Core
+        run: pnpm --filter @flowgate/core lint
+
+      - name: Type check TypeScript Core
+        run: pnpm --filter @flowgate/core typecheck
+
+      - name: Type check TypeScript Examples
+        run: pnpm --filter @flowgate/core typecheck:examples
+
+      - name: Check TypeScript documentation snippets
+        run: pnpm run docs:check-typescript
+
+      - name: Lint n8n Integration
+        run: pnpm --filter @flowgate/n8n-nodes-flowgate lint
+
+  # Security Scanning
+  security:
+    name: Security Scan
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install pip-audit bandit
+
+      - name: Run pip-audit (core runtime dependencies)
+        run: pip-audit --requirement requirements.txt
+
+      - name: Run Bandit security scan
+        run: bandit -r flowgate/ -ll

@@ -1,0 +1,85 @@
+---
+title: OpenAI Agents SDK
+description: FlowGateModelProvider for OpenAI Agents SDK with model candidates, tool gating, and budget tracking.
+---
+
+flowgate provides a `FlowGateModelProvider` that integrates with the OpenAI Agents SDK as an explicit `ModelProvider`. This is a strong fit for the runtime-intelligence direction because model selection, tool gating, and budget control stay inside the agent loop where the SDK is already making decisions.
+
+## Install
+
+```bash
+pip install "flowgate[openai-agents]"
+```
+
+## Quick Start
+
+```python
+import asyncio
+from agents import Agent, Runner
+import flowgate
+from flowgate.integrations.openai_agents import (
+    FlowGateModelProvider,
+    OpenAIAgentsIntegrationConfig,
+)
+
+flowgate.init(mode="observe")
+
+# Configure integration
+config = OpenAIAgentsIntegrationConfig(
+    model_candidates=["gpt-4o-mini", "gpt-4o"],
+    enable_tool_gating=True,
+)
+
+provider = FlowGateModelProvider(config=config)
+
+agent = Agent(
+    name="research_agent",
+    instructions="You are a helpful research assistant.",
+    model_provider=provider,
+)
+
+async def main():
+    with flowgate.run(budget=0.50) as session:
+        result = await Runner.run(agent, "Explain flowgate")
+        print(result.final_output)
+        print(session.summary())
+
+asyncio.run(main())
+```
+
+## Features
+
+- **Model candidates**: List of models the provider can select from based on harness scoring
+- **Tool gating**: Block tool calls when `max_tool_calls` is reached
+- **Scoped runs**: Use `flowgate.run()` for per-task budget tracking
+- **Decision traces**: Full audit trail of model selection and tool gating decisions
+- **Fail-open**: If the harness encounters an error, execution continues with the default model
+
+## Why This Integration Matters
+
+- The model provider sits directly on a core agent decision boundary
+- Budget and tool controls become actionable, not only observable
+- Traces explain why the runtime allowed, switched, or blocked a step
+
+## Configuration
+
+```python
+config = OpenAIAgentsIntegrationConfig(
+    model_candidates=["gpt-4o-mini", "gpt-4o"],  # Models to choose from
+    enable_tool_gating=True,                       # Block tools at cap
+)
+```
+
+## Session Metrics
+
+After a run, `session.summary()` includes:
+- `cost_total`: cumulative USD spent
+- `budget_remaining`: USD left in the budget
+- `step_count`: number of LLM calls
+- `tool_calls`: number of tool executions
+- `latency_used_ms`: total latency
+- `energy_used`: total energy units
+
+<Tip>
+**Example on GitHub:** [integrations/openai_agents_harness.py](https://github.com/oTheShyo/flowgate/blob/main/examples/integrations/openai_agents_harness.py)
+</Tip>

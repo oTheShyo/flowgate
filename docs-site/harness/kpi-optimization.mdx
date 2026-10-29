@@ -1,0 +1,143 @@
+---
+title: KPI-Weighted Routing
+description: Inject business priorities as quality, cost, latency, and energy weights into every model routing decision.
+---
+
+The harness scores each model decision against configurable KPI weights. This lets teams encode business priorities into agent behavior without changing agent code.
+
+## KPI Dimensions
+
+| Dimension | Score Source | Range | What it means |
+|---|---|---|---|
+| `quality` | Model quality priors | 0.0-1.0 | Higher = better output quality |
+| `cost` | Inverse of model cost | 0.0-1.0 | Higher = cheaper model |
+| `latency` | Model latency priors | 0.0-1.0 | Higher = faster response |
+| `energy` | Inverse of energy coefficient | 0.0-1.0 | Higher = lower compute intensity |
+
+## Configuration
+
+<CodeGroup>
+
+```python Python
+import flowgate
+
+flowgate.init(mode="enforce")
+
+with flowgate.run(
+    kpi_weights={"quality": 0.6, "cost": 0.3, "latency": 0.1},
+    kpi_targets={"quality": 0.9}
+) as session:
+    result = await agent.run("Analyze this legal document")
+```
+
+```typescript TypeScript
+import { init, run } from '@flowgate/core';
+
+init({ mode: 'enforce' });
+
+await run({
+  kpiWeights: { quality: 0.6, cost: 0.3, latency: 0.1 },
+}, async () => {
+  await agent.run('Analyze this legal document');
+});
+```
+
+</CodeGroup>
+
+### Weights
+
+Weights are relative. They do not need to sum to 1.0 because they are normalized internally. They control the relative importance of each dimension in the composite score.
+
+```python
+# Quality-first (premium workload)
+kpi_weights = {"quality": 0.8, "cost": 0.1, "latency": 0.1}
+
+# Cost-first (high-volume batch)
+kpi_weights = {"quality": 0.2, "cost": 0.7, "latency": 0.1}
+
+# Balanced
+kpi_weights = {"quality": 0.4, "cost": 0.3, "latency": 0.2, "energy": 0.1}
+```
+
+### Targets
+
+Targets are retained in the run context as policy metadata. Current built-in routing decisions use KPI weights, not KPI targets.
+
+```python
+kpi_targets = {
+    "quality": 0.9,   # Require high quality
+    "latency": 0.7,   # Require reasonable speed
+}
+```
+
+## Scoring Formula
+
+The composite score for a model is:
+
+```
+score = quality_prior * w_quality + cost_utility * w_cost + latency_prior * w_latency + energy_utility * w_energy
+```
+
+Where `w_*` are the normalized weights and utility values are computed from model priors.
+
+## Quality Priors
+
+Built-in quality priors for common models (OpenAI):
+
+| Model | Quality | Latency |
+|---|---|---|
+| o1 | 0.95 | 0.40 |
+| gpt-4o | 0.90 | 0.72 |
+| gpt-4-turbo | 0.88 | 0.66 |
+| gpt-4 | 0.87 | 0.52 |
+| gpt-5-mini | 0.86 | 0.84 |
+| o1-mini | 0.82 | 0.60 |
+| o3-mini | 0.80 | 0.78 |
+| gpt-4o-mini | 0.75 | 0.93 |
+| gpt-3.5-turbo | 0.65 | 1.00 |
+
+## Per-Agent KPI Weights
+
+Different agents can have different priorities:
+
+<CodeGroup>
+
+```python Python
+@flowgate.agent(
+    budget=0.50,
+    kpi_weights={"quality": 0.8, "cost": 0.2}
+)
+async def quality_agent(query: str):
+    return await llm.complete(query)
+
+@flowgate.agent(
+    budget=0.10,
+    kpi_weights={"cost": 0.8, "quality": 0.2}
+)
+async def budget_agent(query: str):
+    return await llm.complete(query)
+```
+
+```typescript TypeScript
+import { harnessAgent } from '@flowgate/core';
+
+const qualityAgent = harnessAgent({
+  budget: 0.50,
+  kpiWeights: { quality: 0.8, cost: 0.2 },
+})(async (query: string) => llm.complete(query));
+
+const budgetAgent = harnessAgent({
+  budget: 0.10,
+  kpiWeights: { cost: 0.8, quality: 0.2 },
+})(async (query: string) => llm.complete(query));
+```
+
+</CodeGroup>
+
+<Note>
+Agent policy metadata does not create a run automatically. Use `run()` around the agent execution when enforcement is required.
+</Note>
+
+<Tip>
+**Example walkthrough:** [KPI-Weighted Routing](/examples/kpi-weighted-routing) | **GitHub:** [examples/cost_tracking.py](https://github.com/oTheShyo/flowgate/blob/main/examples/cost_tracking.py) | [examples/semantic_quality_domain_detection.py](https://github.com/oTheShyo/flowgate/blob/main/examples/semantic_quality_domain_detection.py)
+</Tip>

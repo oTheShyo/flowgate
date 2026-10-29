@@ -1,0 +1,114 @@
+---
+title: LangChain
+description: Harness-aware callback handler for LangChain and LangGraph with budget tracking, cost analytics, and decision traces.
+---
+
+flowgate integrates with LangChain through a callback handler that wraps any `BaseChatModel`. It keeps the product direction intact inside LangChain and LangGraph: decisions happen inside agent execution, with budgets, traces, and runtime policy visible where the workflow actually runs.
+
+## Install
+
+<CodeGroup>
+
+```bash Python
+pip install "flowgate[langchain]"
+```
+
+```bash TypeScript
+npm install @flowgate/langchain @langchain/core @langchain/openai
+```
+
+</CodeGroup>
+
+## Quick Start
+
+<CodeGroup>
+
+```python Python — Harness callback
+import flowgate
+from flowgate.integrations.langchain import get_harness_callback
+from langchain_openai import ChatOpenAI
+
+flowgate.init(mode="observe")
+
+model = ChatOpenAI(model="gpt-4o")
+cb = get_harness_callback()
+
+with flowgate.run(budget=0.50) as session:
+    result = await model.ainvoke("Explain quantum computing", config={"callbacks": [cb]})
+    print(session.summary())
+```
+
+```python Python — Cascade routing
+from langchain_openai import ChatOpenAI
+from langchain_anthropic import ChatAnthropic
+from flowgate.integrations.langchain import FlowGate
+
+cascade = FlowGate(
+    drafter=ChatOpenAI(model="gpt-4o-mini"),
+    verifier=ChatAnthropic(model="claude-sonnet-4"),
+    quality_threshold=0.8,
+)
+
+result = await cascade.ainvoke("Explain quantum computing")
+```
+
+```typescript TypeScript — Drop-in cascade
+import { ChatOpenAI } from '@langchain/openai';
+import { ChatAnthropic } from '@langchain/anthropic';
+import { withCascade } from '@flowgate/langchain';
+
+const cascade = withCascade({
+  drafter: new ChatOpenAI({ model: 'gpt-4o-mini' }),
+  verifier: new ChatAnthropic({ model: 'claude-sonnet-4' }),
+  qualityThreshold: 0.8,
+});
+
+const result = await cascade.invoke('Explain quantum computing');
+```
+
+</CodeGroup>
+
+## Features
+
+- Full LCEL support (pipes, sequences, batch)
+- Streaming with pre-routing
+- Tool calling and structured output
+- LangSmith cost tracking metadata
+- Cost tracking callbacks
+- Domain policies with `flowgate_domain` metadata
+
+## Why This Integration Matters
+
+- Keeps LangChain apps framework-native instead of forcing a proxy hop
+- Makes runtime cost, latency, and trace data visible at the chain or agent level
+- Lets teams move from observability to governance without rewriting chain logic
+
+## Cost Tracking Callback
+
+```python
+from flowgate.integrations.langchain.langchain_callbacks import get_cascade_callback
+
+with get_cascade_callback() as cb:
+    response = await cascade.ainvoke("What is Python?")
+    print(f"Total cost: ${cb.total_cost:.6f}")
+    print(f"Drafter cost: ${cb.drafter_cost:.6f}")
+    print(f"Verifier cost: ${cb.verifier_cost:.6f}")
+```
+
+## LangSmith Integration
+
+When LangSmith tracing is enabled, flowgate adds metadata to runs:
+- `cascade_decision`: whether the drafter was accepted
+- `modelUsed`: which model produced the final response
+- `drafterQuality`: quality score from validation
+- `savingsPercentage`: cost savings achieved
+
+```bash
+export LANGSMITH_API_KEY="..."
+export LANGSMITH_PROJECT="my-project"
+export LANGSMITH_TRACING=true
+```
+
+<Tip>
+**Examples on GitHub:** [integrations/langchain_harness.py](https://github.com/oTheShyo/flowgate/blob/main/examples/integrations/langchain_harness.py) | [packages/langchain-flowgate/examples/](https://github.com/oTheShyo/flowgate/tree/main/packages/langchain-flowgate/examples) (6 TypeScript examples)
+</Tip>
